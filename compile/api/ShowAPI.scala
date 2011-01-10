@@ -183,7 +183,7 @@ trait ShowType
 				}
 		}
 	
-	implicit def showSimpleType(implicit pr: Show[Projection], pa: Show[ParameterRef], si: Show[Singleton], et: Show[EmptyType], p: Show[Parameterized]): Show[SimpleType] =
+	implicit def showSimpleType(implicit pr: Show[Projection], pa: Show[ParameterRef], si: Show[Singleton], ct: Show[ConstantType], et: Show[EmptyType], p: Show[Parameterized]): Show[SimpleType] =
 		new Show[SimpleType] {
 			def show(t: SimpleType) = 
 				t match
@@ -191,6 +191,7 @@ trait ShowType
 					case q: Projection => pr.show(q)
 					case q: ParameterRef => pa.show(q)
 					case q: Singleton => si.show(q)
+					case q: ConstantType => ct.show(q)
 					case q: EmptyType =>  et.show(q)
 					case q: Parameterized => p.show(q)
 				}
@@ -200,6 +201,8 @@ trait ShowBasicTypes
 {
 	implicit def showSingleton(implicit p: Show[Path]): Show[Singleton] =
 		new Show[Singleton] { def show(s: Singleton) = p.show(s.path) }
+	implicit def showConstantType(implicit u: Show[SimpleType]): Show[ConstantType] =
+		new Show[ConstantType] { def show(c: ConstantType) = u.show(c.underlying) }
 	implicit def showEmptyType: Show[EmptyType] =
 		new Show[EmptyType] { def show(e: EmptyType) = "<empty>" }
 	implicit def showParameterRef: Show[ParameterRef] =

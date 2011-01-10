@@ -339,6 +339,7 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 			case (pa: Projection, pb: Projection) => debug(sameProjection(pa, pb), "Different projection")
 			case (pa: ParameterRef, pb: ParameterRef) => debug(sameParameterRef(pa, pb), "Different parameter ref")
 			case (sa: Singleton, sb: Singleton) => debug(sameSingleton(sa, sb), "Different singleton")
+			case (ca: ConstantType, cb: ConstantType) => debug(sameSimpleType(ca.underlying, cb.underlying), "Different constant type")
 			case (_: EmptyType, _: EmptyType) => true
 			case (pa: Parameterized, pb: Parameterized) => debug(sameParameterized(pa, pb), "Different parameterized")
 			case _ => debug(false, "Different category of simple type (" + a.getClass.getName + " and " + b.getClass.getName + ") for (" + a + " and " + b + ")")

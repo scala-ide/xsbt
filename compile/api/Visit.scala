@@ -150,6 +150,7 @@ class Visit
 			case p: Projection => visitProjection(p)
 			case _: EmptyType => visitEmptyType()
 			case s: Singleton => visitSingleton(s)
+			case c: ConstantType => visitConstantType(c) 
 			case pr: ParameterRef => visitParameterRef(pr)
 		}
 	}
@@ -157,6 +158,7 @@ class Visit
 	def visitEmptyType() {}
 	def visitParameterRef(p: ParameterRef) {}
 	def visitSingleton(s: Singleton) { visitPath(s.path) }
+	def visitConstantType(c: ConstantType) { visitType(c.underlying) }
 	def visitPath(path: Path) = path.components foreach visitPathComponent
 	def visitPathComponent(pc: PathComponent) = pc match
 	{

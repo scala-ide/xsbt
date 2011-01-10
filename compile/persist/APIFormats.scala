@@ -81,11 +81,14 @@ trait APIFormats extends FormatExtra
 	def formatDefinition(implicit vl: Format[Val], vr: Format[Var], ds: Format[Def], cl: Format[ClassLike], ta: Format[TypeAlias], td: Format[TypeDeclaration]): Format[Definition] =
 		asUnion(vl, vr, ds, cl, ta, td)
 
-	def formatSimpleType(implicit pr: Format[Projection], pa: Format[ParameterRef], si: Format[Singleton], et: Format[EmptyType], p: Format[Parameterized]): Format[SimpleType] =
-		asUnion(pr, pa, si, et, p)
+	def formatSimpleType(implicit pr: Format[Projection], pa: Format[ParameterRef], si: Format[Singleton], ct: Format[ConstantType], et: Format[EmptyType], p: Format[Parameterized]): Format[SimpleType] =
+		asUnion(pr, pa, si, ct, et, p)
 
 	implicit def formatEmptyType: Format[EmptyType] = asSingleton(new EmptyType)
 	implicit def formatSingleton(implicit p: Format[Path]): Format[Singleton] = wrap[Singleton, Path](_.path, new Singleton(_))
+	
+	def formatConstantType(implicit t: Format[SimpleType]): Format[ConstantType] =
+		wrap[ConstantType, SimpleType](_.underlying, new ConstantType(_))(t)
 
 	def formatProjection(implicit t: Format[SimpleType], s: Format[String]): Format[Projection] =
 		p2( (p: Projection) => (p.prefix, p.id))(new Projection(_,_))(t, s)
@@ -198,8 +201,8 @@ class DefaultAPIFormats(implicit val references: References) extends APIFormats
 
 	implicit lazy val tpf: Format[TypeParameter] = formatTypeParameter(array)
 
-	// SimpleType is cyclic with Projection and Parameterized
-	implicit lazy val stf: Format[SimpleType] = lazyFormat(formatSimpleType(projf, ??, ??, ??, paramf))
+	// SimpleType is cyclic with Projection, ConstantType and Parameterized
+	implicit lazy val stf: Format[SimpleType] = lazyFormat(formatSimpleType(projf, ??, ??, constf, ??, paramf))
 	// Type is cyclic with a lot, including SimpleType and TypeParameter
 	implicit lazy val tf: Format[Type] = lazyFormat( formatType(stf, ??, ??, ??, ??) )
 
@@ -210,6 +213,7 @@ class DefaultAPIFormats(implicit val references: References) extends APIFormats
 	implicit lazy val projf: Format[Projection] = formatProjection(stf, ??)
 	implicit lazy val af: Format[Annotation] = formatAnnotation(stf, ??)
 	implicit lazy val paramf: Format[Parameterized] = formatParameterized(stf, array(tf))
+	implicit lazy val constf: Format[ConstantType] = formatConstantType(stf)
 
 	// Super and Path are cyclic
 	implicit lazy val sf: Format[Super] = lazyFormat(formatSuper(pathf))

@@ -8,6 +8,8 @@ Type
 			id: Int
 		Singleton
 			path: Path
+		ConstantType
+			underlying : SimpleType
 		EmptyType
 		Parameterized
 			baseType : SimpleType

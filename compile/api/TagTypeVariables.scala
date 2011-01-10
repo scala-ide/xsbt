@@ -99,6 +99,7 @@ private class TagTypeVariables
 			case a: Annotated => tagAnnotated(a)
 			case p: Parameterized => tagParameterized(p)
 			case p: Projection => tagProjection(p)
+			case c: ConstantType => tagConstantType(c)
 			case _: EmptyType | _: Singleton | _: ParameterRef => ()
 		}
 	}
@@ -106,6 +107,7 @@ private class TagTypeVariables
 	def tagExistential(e: Existential) = tagParameters(e.clause, e.baseType)
 	def tagPolymorphic(p: Polymorphic) = tagParameters(p.parameters, p.baseType)
 	def tagProjection(p: Projection) = tagType(p.prefix)
+	def tagConstantType(c: ConstantType) = tagType(c.underlying)
 	def tagParameterized(p: Parameterized)
 	{
 		tagType(p.baseType)

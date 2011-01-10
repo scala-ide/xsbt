@@ -304,7 +304,7 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 			case NoPrefix => Constants.emptyType
 			case ThisType(sym) => new xsbti.api.Singleton(thisPath(sym))
 			case SingleType(pre, sym) => projectionType(in, pre, sym)
-			case ConstantType(value) => error("Constant type (not implemented)")
+			case ct @ ConstantType(value) =>  new xsbti.api.ConstantType(simpleType(in, ct.underlying))
 			case TypeRef(pre, sym, args) =>
 				val base = projectionType(in, pre, sym)
 				if(args.isEmpty) base else new xsbti.api.Parameterized(base, types(in, args))
