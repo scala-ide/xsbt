@@ -1,18 +1,53 @@
-package sbt.parse
+package sbt.complete
+
+object JLineTest
+{
+	import DefaultParsers._
+
+	val one = "blue" | "green" | "black"
+	val two = token("color" ~> Space) ~> token(one)
+	val three = token("color" ~> Space) ~> token(ID.examples("blue", "green", "black"))
+	val four = token("color" ~> Space) ~> token(ID, "<color name>")
+
+	val num = token(NatBasic)
+	val five = (num ~ token("+" | "-") ~ num) <~ token('=') flatMap {
+		case a ~ "+" ~ b => token((a+b).toString)
+		case a ~ "-" ~ b => token((a-b).toString)
+	}
+
+	val parsers = Map("1" -> one, "2" -> two, "3" -> three, "4" -> four, "5" -> five)
+	def main(args: Array[String])
+	{
+		import jline.{ConsoleReader,Terminal}
+		val reader = new ConsoleReader()
+		Terminal.getTerminal.disableEcho()
+
+		val parser = parsers(args(0))
+		JLineCompletion.installCustomCompletor(reader, parser)
+		def loop() {
+			val line = reader.readLine("> ")
+			if(line ne null) {
+				println("Result: " + apply(parser)(line).resultEmpty)
+				loop()
+			}
+		}
+		loop()
+	}
+}
 
 	import Parser._
 	import org.scalacheck._
 
 object ParserTest extends Properties("Completing Parser")
 {
-	val wsc = charClass(_.isWhitespace)
-	val ws = ( wsc + ) examples(" ")
-	val optWs = ( wsc * ) examples("")
+		import Parsers._
 
 	val nested = (token("a1") ~ token("b2")) ~ "c3"
 	val nestedDisplay = (token("a1", "<a1>") ~ token("b2", "<b2>")) ~ "c3"
 
-	def p[T](f: T): T = { /*println(f);*/ f }
+	val spacePort = (token(Space) ~> Port)
+
+	def p[T](f: T): T = { println(f); f }
 
 	def checkSingle(in: String, expect: Completion)(expectDisplay: Completion = expect) =
 		( ("token '" + in + "'") |: checkOne(in, nested, expect)) &&
@@ -36,6 +71,13 @@ object ParserTest extends Properties("Completing Parser")
 	property("nested tokens c") = checkSingle("a1b2", Completion.suggestStrict("c3") )()
 	property("nested tokens c3") = checkSingle("a1b2c", Completion.suggestStrict("3"))()
 	property("nested tokens c inv") = checkInvalid("a1b2a")
+
+	property("suggest space") = checkOne("", spacePort, Completion.tokenStrict("", " "))
+	property("suggest port") = checkOne(" ", spacePort, Completion.displayStrict("<port>") )
+	property("no suggest at end") = checkOne("asdf", "asdf", Completion.suggestStrict(""))
+	property("no suggest at token end") = checkOne("asdf", token("asdf"), Completion.suggestStrict(""))
+	property("empty suggest for examples") = checkOne("asdf", any.+.examples("asdf", "qwer"), Completion.suggestStrict(""))
+	property("empty suggest for examples token") = checkOne("asdf", token(any.+.examples("asdf", "qwer")), Completion.suggestStrict(""))
 }
 object ParserExample
 {
@@ -43,8 +85,8 @@ object ParserExample
 	val notws = charClass(!_.isWhitespace)+
 
 	val name = token("test")
-	val options = (ws ~ token("quick" | "failed" | "new") )*
-	val include = (ws ~ token(examples(notws, Set("am", "is", "are", "was", "were") )) )*
+	val options = (ws ~> token("quick" | "failed" | "new") )*
+	val include = (ws ~> token(examples(notws.string, Set("am", "is", "are", "was", "were") )) )*
 
 	val t = name ~ options ~ include
 
@@ -68,7 +110,7 @@ object ParserExample
 		val ann = aqn ~ an
 
 		def r = apply(ann)("a"*(n*2)).resultEmpty
-		println(r.isDefined)
+		println(r.isValid)
 	}
 	def run2(n: Int)
 	{

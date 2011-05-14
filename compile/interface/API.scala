@@ -1,5 +1,5 @@
 /* sbt -- Simple Build Tool
- * Copyright 2008, 2009, 2010 Mark Harrah
+ * Copyright 2008, 2009, 2010, 2011 Mark Harrah
  */
 package xsbt
 
@@ -17,7 +17,9 @@ object API
 	// for 2.7 compatibility: this class was removed in 2.8
 	type ImplicitMethodType = AnyRef
 }
-import API._ // imports ImplicitMethodType, which will preserve source compatibility in 2.7 for defDef
+ // imports ImplicitMethodType, which will preserve source compatibility in 2.7 for defDef
+import API._
+
 final class API(val global: Global, val callback: xsbti.AnalysisCallback) extends Compat
 {
 	import global._
@@ -35,7 +37,8 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 			val stop = System.currentTimeMillis
 			println("API phase took : " + ((stop - start)/1000.0) + " s")
 		}
-		def processUnit(unit: CompilationUnit)
+		def processUnit(unit: CompilationUnit) = if(!unit.isJava) processScalaUnit(unit)
+		def processScalaUnit(unit: CompilationUnit)
 		{
 			val sourceFile = unit.source.file.file
 			println("Traversing " + sourceFile)
@@ -71,7 +74,7 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 	//   we pass a thunk, whose class is loaded by the interface class loader (this class's loader)
 	//   SafeLazy ensures that once the value is forced, the thunk is nulled out and so 
 	//   references to the thunk's classes are not retained.  Specifically, it allows the interface classes
-	//   (those in this subproject) can be garbage collected after compilation. 
+	//   (those in this subproject) to be garbage collected after compilation. 
 	private[this] val safeLazy = Class.forName("xsbti.SafeLazy").getMethod("apply", classOf[xsbti.F0[_]])
 	private def lzy[S <: AnyRef](s: => S): xsbti.api.Lazy[S] =
 	{
@@ -161,8 +164,11 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 					build(base, typeParameters(in, typeParams0), Nil)
 				case MethodType(params, resultType) => // in 2.7, params is of type List[Type], in 2.8 it is List[Symbol]
 					build(resultType, typeParams, (params: xsbti.api.ParameterList) :: valueParameters)
+				case Nullary(resultType) => // 2.9 and later
+					build(resultType, typeParams, valueParameters)
 				case returnType =>
-					new xsbti.api.Def(valueParameters.reverse.toArray, processType(in, returnType), typeParams, simpleName(s), getAccess(s), getModifiers(s), annotations(in,s))
+					val t2 = processType(in, dropConst(returnType))
+					new xsbti.api.Def(valueParameters.reverse.toArray, t2, typeParams, simpleName(s), getAccess(s), getModifiers(s), annotations(in,s))
 			}
 		}
 		def parameterS(s: Symbol): xsbti.api.MethodParameter =
@@ -194,10 +200,19 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 		class WithDefault { val DEFAULTPARAM = 0x00000000 }
 		s != NoSymbol && s.hasFlag(Flags.DEFAULTPARAM)
 	}
-	private def fieldDef[T](in: Symbol, s: Symbol, create: (xsbti.api.Type, String, xsbti.api.Access, xsbti.api.Modifiers, Array[xsbti.api.Annotation]) => T): T =
+	private def fieldDef[T](in: Symbol, s: Symbol, keepConst: Boolean, create: (xsbti.api.Type, String, xsbti.api.Access, xsbti.api.Modifiers, Array[xsbti.api.Annotation]) => T): T =
 	{
-		val t = viewer(in).memberType(s)
-		create(processType(in, t), simpleName(s), getAccess(s), getModifiers(s), annotations(in, s))
+		val t = dropNullary(viewer(in).memberType(s))
+		val t2 = if(keepConst) t else dropConst(t)
+		create(processType(in, t2), simpleName(s), getAccess(s), getModifiers(s), annotations(in, s))
+	}
+	private def dropConst(t: Type): Type = t match {
+		case ConstantType(constant) => constant.tpe
+		case _ => t
+	}
+	private def dropNullary(t: Type): Type = t match {
+		case Nullary(un) => un
+		case _ => t
 	}
 		
 	private def typeDef(in: Symbol, s: Symbol): xsbti.api.TypeMember =
@@ -246,8 +261,8 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 		defs.toArray.flatMap( (d: Symbol) => definition(in, d))
 	private def definition(in: Symbol, sym: Symbol): Option[xsbti.api.Definition] =
 	{
-		def mkVar = Some(fieldDef(in, sym, new xsbti.api.Var(_,_,_,_,_)))
-		def mkVal = Some(fieldDef(in, sym, new xsbti.api.Val(_,_,_,_,_)))
+		def mkVar = Some(fieldDef(in, sym, false, new xsbti.api.Var(_,_,_,_,_)))
+		def mkVal = Some(fieldDef(in, sym, true, new xsbti.api.Val(_,_,_,_,_)))
 		if(sym.isClass || sym.isModule)
 			if(ignoreClass(sym)) None else Some(classLike(in, sym))
 		else if(isNonClassType(sym))
@@ -262,7 +277,7 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 			None
 	}
 	private def ignoreClass(sym: Symbol): Boolean =
-		sym.isLocalClass || sym.isAnonymousClass || fullName(sym).endsWith(nme.LOCALCHILD)
+		sym.isLocalClass || sym.isAnonymousClass || fullName(sym).endsWith(LocalChild)
 
 	// This filters private[this] vals/vars that were not in the original source.
 	//  The getter will be used for processing instead.
@@ -304,16 +319,17 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 			case NoPrefix => Constants.emptyType
 			case ThisType(sym) => new xsbti.api.Singleton(thisPath(sym))
 			case SingleType(pre, sym) => projectionType(in, pre, sym)
-			case ct @ ConstantType(value) =>  new xsbti.api.ConstantType(simpleType(in, ct.underlying))
+			case ConstantType(constant) => new xsbti.api.Constant(processType(in, constant.tpe), constant.stringValue)
 			case TypeRef(pre, sym, args) =>
 				val base = projectionType(in, pre, sym)
 				if(args.isEmpty) base else new xsbti.api.Parameterized(base, types(in, args))
-			case SuperType(thistpe: Type, supertpe: Type) => error("Super type (not implemented)")
+			case SuperType(thistpe: Type, supertpe: Type) => error("Super type (not implemented): this=" + thistpe + ", super=" + supertpe)
 			case at: AnnotatedType => annotatedType(in, at)
 			case rt: CompoundType => structure(rt)
 			case ExistentialType(tparams, result) => new xsbti.api.Existential(processType(in, result), typeParameters(in, tparams))
 			case NoType => error("NoType")
 			case PolyType(typeParams, resultType) => new xsbti.api.Polymorphic(processType(in, resultType), typeParameters(in, typeParams))
+			case Nullary(resultType) => error("Unexpected nullary method type " + in + " in " + in.owner)
 			case _ => error("Unhandled type " + t.getClass + " : " + t)
 		}
 	}
@@ -332,8 +348,7 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 			case x => error("Unknown type parameter info: " + x.getClass)
 		}
 	}
-	private def selfType(in: Symbol, s: Symbol): xsbti.api.Type =
-		if(s.thisSym eq s) Constants.normalSelf else processType(in, s.thisSym.typeOfThis)
+	private def selfType(in: Symbol, s: Symbol): xsbti.api.Type  =  processType(in, s.thisSym.typeOfThis)
 
 	private def classLike(in: Symbol, c: Symbol): ClassLike = classLikeCache.getOrElseUpdate( (in,c), mkClassLike(in, c))
 	private def mkClassLike(in: Symbol, c: Symbol): ClassLike =
@@ -378,7 +393,6 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 		val emptyPath = new xsbti.api.Path(Array())
 		val thisPath = new xsbti.api.This
 		val emptyType = new xsbti.api.EmptyType
-		val normalSelf = emptyType
 	}
 	private abstract class TopLevelTraverser extends Traverser
 	{
@@ -420,5 +434,10 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 		if(annots.isEmpty) processType(in, at.underlying) else annotated(in, annots, at.underlying)
 	}
 	private def fullName(s: Symbol): String = nameString(s)
-	private def simpleName(s: Symbol): String = s.simpleName.toString.trim
+	private def simpleName(s: Symbol): String =
+	{
+		val n = s.originalName
+		val n2 = if(n.toString == "<init>") n else n.decode
+		n2.toString.trim
+	}
 }

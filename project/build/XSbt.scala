@@ -31,7 +31,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 		// Utilities related to reflection, managing Scala versions, and custom class loaders
 	val classpathSub = baseProject(utilPath / "classpath", "Classpath", launchInterfaceSub, ioSub)
 		// Command line-related utilities.  Currently, history.
-	val completeSub = project(utilPath / "complete", "Completion", new InputProject(_), controlSub, ioSub)
+	val completeSub = project(utilPath / "complete", "Completion", new InputProject(_), collectionSub, controlSub, ioSub)
 		// logging
 	val logSub = project(utilPath / "log", "Logging", new LogProject(_), interfaceSub, processSub)
 		// class file reader and analyzer
@@ -53,12 +53,8 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	val cacheSub = project(cachePath, "Cache", new CacheProject(_), ioSub, collectionSub)
 		// Builds on cache to provide caching for filesystem-related operations
 	val trackingSub = baseProject(cachePath / "tracking", "Tracking", cacheSub, ioSub)
-		// Interface to Jetty
-	val webappSub = project("web", "Web App", new WebAppProject(_), ioSub, logSub, classpathSub, controlSub)
 		// Embedded Scala code runner
 	val runSub = baseProject("run", "Run", ioSub, logSub, classpathSub, processSub)
-		// Command parsers
-	val parsersSub = baseProject("main" / "parsers", "Command Parsers", completeSub)
 
 	/***** compilation/discovery related modules *****/
 
@@ -76,31 +72,27 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 		// Searches the source API data structures, currently looks for subclasses and annotations
 	val discoverySub = project(compilePath / "discover", "Discovery", new DiscoveryProject(_), compileIncrementalSub, apiSub)
 
-
-		// mostly for implementing 'load' command, could perhaps be trimmed and merged into 'main'
-	val buildSub = baseProject("main" / "build", "Project Builder",
-		classfileSub, classpathSub, compilePersistSub, compilerSub, compileIncrementalSub, interfaceSub, ivySub, launchInterfaceSub, logSub, discoverySub, processSub)
-
 	val scriptedBaseSub = project("scripted" / "base", "Scripted Framework", new TestProject(_), ioSub, processSub)
-	val scriptedSbtSub = baseProject("scripted" / "sbt", "Scripted sbt", ioSub, logSub, processSub, scriptedBaseSub, launchInterfaceSub /*should really be a 'provided' dependency*/)
-	val scriptedPluginSub = project("scripted" / "plugin", "Scripted Plugin", new Scripted(_))
+	val scriptedSbtSub = baseProject("scripted" / "sbt", "Scripted sbt", ioSub, logSub, processSub, scriptedBaseSub, launchInterfaceSub /*should really be a 'provided' dependency*/)	
 
 		// Standard task system.  This provides map, flatMap, join, and more on top of the basic task model.
 	val stdTaskSub = testedBase(tasksPath / "standard", "Task System", taskSub, collectionSub, logSub, ioSub, processSub)
+		// Implementation and support code for defining actions.
+	val actionsSub = baseProject(mainPath / "actions", "Actions",
+		classfileSub, classpathSub, compileIncrementalSub, compilePersistSub, compilerSub, completeSub, discoverySub,
+		interfaceSub, ioSub, ivySub, logSub, processSub, runSub, stdTaskSub, taskSub, trackingSub, testingSub)
+
 		// The main integration project for sbt.  It brings all of the subsystems together, configures them, and provides for overriding conventions.
-	val mainSub = baseProject("main", "Main",
-		buildSub, compileIncrementalSub, compilerSub, completeSub, discoverySub,
-		ioSub, logSub, processSub, taskSub, stdTaskSub, runSub, trackingSub, testingSub)
+	val mainSub = baseProject(mainPath, "Main", actionsSub, interfaceSub, ioSub, ivySub, launchInterfaceSub, logSub, processSub, runSub)
 		// Strictly for bringing implicits and aliases from subsystems into the top-level sbt namespace through a single package object
-	val sbtSub = project(sbtPath, "Simple Build Tool", new Sbt(_), mainSub) // technically, we need a dependency on all of mainSub's dependencies, but we don't do that since this is strictly an integration project
+		//  technically, we need a dependency on all of mainSub's dependencies, but we don't do that since this is strictly an integration project
+		//  with the sole purpose of providing certain identifiers without qualification (with a package object)
+	val sbtSub = project(sbtPath, "Simple Build Tool", new Sbt(_), mainSub)
+	val scriptedPluginSub = project("scripted" / "plugin", "Scripted Plugin", new Scripted(_), sbtSub, classpathSub)
 
 	/** following modules are not updated for 2.8 or 0.9 */
 	/*
-	val sbtSub = project(sbtPath, "Simple Build Tool", new SbtProject(_) {},
-		compilerSub, launchInterfaceSub, testingSub, cacheSub, taskSub)
-
 	val installerSub = project(sbtPath / "install", "Installer", new InstallerProject(_) {}, sbtSub)
-
 	lazy val dist = task { None } dependsOn(launchSub.proguard, sbtSub.publishLocal, installerSub.publishLocal)*/
 
 	def baseProject(path: Path, name: String, deps: Project*) = project(path, name, new Base(_), deps : _*)
@@ -113,6 +105,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	def launchPath = path("launch")
 	def utilPath = path("util")
 	def compilePath = path("compile")
+	def mainPath = path("main")
 
 	def compilerInterfaceClasspath = compileInterfaceSub.projectClasspath(Configurations.Test)
 
@@ -121,9 +114,10 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 
 	def jlineDep = "jline" % "jline" % "0.9.94" intransitive()
 
-	// publish locally when on repository server
 	override def managedStyle = ManagedStyle.Ivy
-	val publishTo = Resolver.file("test-repo", new File("/var/dbwww/repo/"))
+	val publishTo = Resolver.url("typesafe-ivy-releases", new java.net.URL("http://typesafe.artifactoryonline.com/typesafe/ivy-releases/"))
+	val additional = publishTo
+	Credentials(Path.userHome / ".ivy2" / ".typesafe-credentials", log)
 
 		/* Subproject configurations*/
 	class LaunchProject(info: ProjectInfo) extends Base(info) with TestWithIO with TestDependencies with ProguardLaunch with NoCrossPaths
@@ -151,41 +145,10 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	{
 		val jline = jlineDep
 	}
-	class WebAppProject(info: ProjectInfo) extends Base(info)
-	{
-		val jetty = "org.mortbay.jetty" % "jetty" % "6.1.14" % "optional"
-		val jettyplus = "org.mortbay.jetty" % "jetty-plus" % "6.1.14" % "optional"
-
-		val jetty7server = "org.eclipse.jetty" % "jetty-server" % "7.0.1.v20091125" % "optional"
-		val jetty7webapp = "org.eclipse.jetty" % "jetty-webapp" % "7.0.1.v20091125" % "optional"
-		val jetty7plus = "org.eclipse.jetty" % "jetty-plus" % "7.0.1.v20091125" % "optional"
-
-		val optional = Configurations.Optional
-
-		/* For generating JettyRun for Jetty 6 and 7.  The only difference is the imports, but the file has to be compiled against each set of imports. */
-		override def compileAction = super.compileAction dependsOn (generateJettyRun6, generateJettyRun7)
-		def jettySrcDir = info.projectPath
-		def jettyTemplate = jettySrcDir / "LazyJettyRun.scala.templ"
-
-		lazy val generateJettyRun6 = generateJettyRunN("6")
-		lazy val generateJettyRun7 = generateJettyRunN("7")
-
-		def generateJettyRunN(n: String) =
-			generateJettyRun(jettyTemplate, jettySrcDir / ("LazyJettyRun" + n + ".scala"), n, jettySrcDir / ("jetty" + n + ".imports"))
-
-		def generateJettyRun(in: Path, out: Path, version: String, importsPath: Path) =
-			task
-			{
-				(for(template <- FileUtilities.readString(in asFile, log).right; imports <- FileUtilities.readString(importsPath asFile, log).right) yield
-					FileUtilities.write(out asFile, processJettyTemplate(template, version, imports), log).toLeft(()) ).left.toOption
-			}
-		def processJettyTemplate(template: String, version: String, imports: String): String =
-			template.replaceAll("""\Q${jetty.version}\E""", version).replaceAll("""\Q${jetty.imports}\E""", imports)
-	}
 	trait TestDependencies extends Project
 	{
-		val sc = "org.scala-tools.testing" % "scalacheck_2.8.0" % "1.7" % "test"
-		val sp = "org.scala-tools.testing" % "specs_2.8.0" % "1.6.5" % "test"
+		val sc = "org.scala-tools.testing" % "scalacheck_2.8.1" % "1.8" % "test"
+		val sp = "org.scala-tools.testing" % "specs_2.8.1" % "1.6.7.2" % "test"
 	}
 	class LogProject(info: ProjectInfo) extends Base(info) with TestDependencies
 	{
@@ -195,7 +158,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	class CacheProject(info: ProjectInfo) extends Base(info) with SBinaryDep
 	class PersistProject(info: ProjectInfo) extends Base(info) with SBinaryDep
 	{
-		override def compileOptions = super.compileOptions ++ compileOptions("-Xlog-implicits")
+//		override def compileOptions = super.compileOptions ++ compileOptions("-Xlog-implicits")
 	}
 	trait SBinaryDep extends BasicManagedProject
 	{
@@ -227,7 +190,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	class CompileProject(info: ProjectInfo) extends Base(info) with TestWithLog with TestWithLaunch with TestWithAPI
 	{
 		override def testCompileAction = super.testCompileAction dependsOn(compileInterfaceSub.`package`, interfaceSub.`package`)
-		override def testClasspath = super.testClasspath +++ compileInterfaceSub.packageSrcJar --- compilerInterfaceClasspath --- interfaceSub.mainCompilePath +++ interfaceSub.jarPath
+		override def testClasspath = super.testClasspath +++ compileInterfaceSub.packageSrcJar --- compilerInterfaceClasspath --- interfaceSub.mainCompilePath +++ interfaceSub.jarPath +++ buildCompilerJar
 	}
 	class IvyProject(info: ProjectInfo) extends Base(info) with TestWithIO with TestWithLog with TestWithLaunch
 	{
@@ -277,7 +240,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	{
 		override def componentID = None
 	}
-	class Scripted(info: ProjectInfo) extends PluginProject(info) with Licensed
+	class Scripted(info: ProjectInfo) extends Base(info)
 	{
 		override def managedStyle = ManagedStyle.Ivy
 		override def scratch = true
@@ -307,6 +270,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 		
 		// sub projects for each version of Scala to precompile against other than the one sbt is built against
 		// each sub project here will add ~100k to the download
+		lazy val precompiled29 = precompiledSub("2.9.0")
 		lazy val precompiled28 = precompiledSub("2.8.0")
 		lazy val precompiled27 = precompiledSub("2.7.7")
 
@@ -355,15 +319,15 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 		override def normalizedName = "sbt"
 		override def testWithCompileClasspath = super.testWithCompileClasspath ++ Seq(scriptedSbtSub)
 		override def testAction = super.testAction dependsOn(publishLocal)
-		def scriptedScalaVersions = "2.8.1.RC4"
+		def scriptedScalaVersions = "2.8.1"
 		lazy val scripted = task { args => task {
 			val launcher  = launchSub.outputJar.asFile
-			val loader = ClasspathUtilities.toLoader(scriptedSbtSub.testClasspath, buildScalaInstance.loader)
+			val loader = ClasspathUtilities.toLoader(scriptedSbtSub.testClasspath, scriptedSbtSub.buildScalaInstance.loader)
 			val m = ModuleUtilities.getObject("sbt.test.ScriptedTests", loader)
 			val r = m.getClass.getMethod("run", classOf[File], classOf[Boolean], classOf[String], classOf[String], classOf[String], classOf[Array[String]], classOf[File])
 			try { r.invoke(m, sourcePath / "sbt-test" asFile, true: java.lang.Boolean, version.toString, buildScalaVersion, scriptedScalaVersions, args, launcher) }
 			catch { case e: java.lang.reflect.InvocationTargetException => throw e.getCause }
 			None
-		} dependsOn(publishLocal, scriptedSbtSub.compile) }
+		} dependsOn(publishLocal, scriptedSbtSub.compile, testCompile) }
 	}
 }

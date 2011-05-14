@@ -1,7 +1,7 @@
 /* sbt -- Simple Build Tool
  * Copyright 2010  Mark Harrah
  */
-package sbt.parse
+package sbt.complete
 
 /**
 * Represents a set of completions.
@@ -11,7 +11,7 @@ package sbt.parse
 sealed trait Completions
 {
 	def get: Set[Completion]
-	final def x(o: Completions): Completions = Completions( for(cs <- get; os <- o.get) yield cs ++ os )
+	final def x(o: Completions): Completions = flatMap(_ x o)
 	final def ++(o: Completions): Completions = Completions( get ++ o.get )
 	final def +:(o: Completion): Completions = Completions(get + o)
 	final def filter(f: Completion => Boolean): Completions = Completions(get filter f)
@@ -68,13 +68,12 @@ sealed trait Completion
 
 	/** Appends the completions in `o` with the completions in this Completion.*/
 	def ++(o: Completion): Completion = Completion.concat(this, o)
-	final def x(o: Completions): Completions = o.map(this ++ _)
+	final def x(o: Completions): Completions = if(Completion evaluatesRight this) o.map(this ++ _) else Completions.strict(Set.empty + this)
 	override final lazy val hashCode = Completion.hashCode(this)
 	override final def equals(o: Any) = o match { case c: Completion => Completion.equal(this, c); case _ => false }
 }
-final class DisplayOnly(display0: String) extends Completion
+final class DisplayOnly(val display: String) extends Completion
 {
-	lazy val display = display0
 	def isEmpty = display.isEmpty
 	def append = ""
 	override def toString = "{" + display + "}"
@@ -103,6 +102,13 @@ object Completion
 			case (at: Token, _) if at.append.isEmpty => b
 			case _ if a.isEmpty => b
 			case _ => a
+		}
+	def evaluatesRight(a: Completion): Boolean =
+		a match
+		{
+			case _: Suggestion => true
+			case at: Token if at.append.isEmpty => true
+			case _ => a.isEmpty
 		}
 
 	def equal(a: Completion, b: Completion): Boolean =

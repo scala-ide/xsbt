@@ -1,5 +1,5 @@
 /* sbt -- Simple Build Tool
- * Copyright 2009, 2010  Mark Harrah
+ * Copyright 2009, 2010, 2011  Mark Harrah
  */
 package xsbt.boot
 
@@ -14,7 +14,7 @@ import core.cache.DefaultRepositoryCacheManager
 import core.event.EventManager
 import core.module.id.{ArtifactId, ModuleId, ModuleRevisionId}
 import core.module.descriptor.{Configuration => IvyConfiguration, DefaultDependencyArtifactDescriptor, DefaultDependencyDescriptor, DefaultModuleDescriptor, ModuleDescriptor}
-import core.module.descriptor.{DefaultExcludeRule, ExcludeRule}
+import core.module.descriptor.{Artifact => IArtifact, DefaultExcludeRule, ExcludeRule}
 import core.report.ResolveReport
 import core.resolve.{ResolveEngine, ResolveOptions}
 import core.retrieve.{RetrieveEngine, RetrieveOptions}
@@ -22,29 +22,39 @@ import core.sort.SortEngine
 import core.settings.IvySettings
 import plugins.matcher.{ExactPatternMatcher, PatternMatcher}
 import plugins.resolver.{ChainResolver, FileSystemResolver, IBiblioResolver, URLResolver}
-import util.{DefaultMessageLogger, Message, MessageLoggerEngine}
+import util.{DefaultMessageLogger, Message, MessageLoggerEngine, url}
+import url.CredentialsStore
 
 import BootConfiguration._
 
-sealed trait UpdateTarget extends NotNull { def tpe: String; def classifiers: List[String] }
+sealed trait UpdateTarget { def tpe: String; def classifiers: List[String] }
 final class UpdateScala(val classifiers: List[String]) extends UpdateTarget { def tpe = "scala" }
 final class UpdateApp(val id: Application, val classifiers: List[String]) extends UpdateTarget { def tpe = "app" }
 
-final class UpdateConfiguration(val bootDirectory: File, val ivyCacheDirectory: Option[File], val scalaVersion: String, val repositories: List[Repository]) extends NotNull
+final class UpdateConfiguration(val bootDirectory: File, val ivyHome: Option[File], val scalaVersion: String, val repositories: List[Repository])
 
 /** Ensures that the Scala and application jars exist for the given versions or else downloads them.*/
 final class Update(config: UpdateConfiguration)
 {
-	import config.{bootDirectory, ivyCacheDirectory, repositories, scalaVersion}
+	import config.{bootDirectory, ivyHome, repositories, scalaVersion}
 	bootDirectory.mkdirs
 
 	private def logFile = new File(bootDirectory, UpdateLogName)
 	private val logWriter = new PrintWriter(new FileWriter(logFile))
 
+	private def addCredentials()
+	{
+		val List(realm, host, user, password) = List("sbt.boot.realm", "sbt.boot.host", "sbt.boot.user", "sbt.boot.password") map System.getProperty
+		if(realm != null && host != null && user != null && password != null)
+			CredentialsStore.INSTANCE.addCredentials(realm, host, user, password)
+	}
 	private lazy val settings =
 	{
+		addCredentials()
 		val settings = new IvySettings
+		ivyHome foreach settings.setDefaultIvyUserDir
 		addResolvers(settings)
+		settings.setVariable("ivy.checksums", "sha1,md5")
 		settings.setDefaultConflictManager(settings.getConflictManager(ConflictManagerName))
 		settings.setBaseDir(bootDirectory)
 		settings.setVariable("scala", scalaVersion)
@@ -61,16 +71,16 @@ final class Update(config: UpdateConfiguration)
 	private lazy val ivyLockFile = new File(settings.getDefaultIvyUserDir, ".sbt.ivy.lock")
 
 	/** The main entry point of this class for use by the Update module.  It runs Ivy */
-	def apply(target: UpdateTarget): Boolean =
+	def apply(target: UpdateTarget, reason: String): Boolean =
 	{
 		Message.setDefaultLogger(new SbtIvyLogger(logWriter))
-		val action = new Callable[Boolean] { def call =  lockedApply(target) }
+		val action = new Callable[Boolean] { def call =  lockedApply(target, reason) }
 		Locks(ivyLockFile, action)
 	}
-	private def lockedApply(target: UpdateTarget) =
+	private def lockedApply(target: UpdateTarget, reason: String) =
 	{
 		ivy.pushContext()
-		try { update(target); true }
+		try { update(target, reason); true }
 		catch
 		{
 			case e: Exception =>
@@ -86,7 +96,7 @@ final class Update(config: UpdateConfiguration)
 		}
 	}
 	/** Runs update for the specified target (updates either the scala or appliciation jars for building the project) */
-	private def update(target: UpdateTarget)
+	private def update(target: UpdateTarget, reason: String)
 	{
 		import IvyConfiguration.Visibility.PUBLIC
 		// the actual module id here is not that important
@@ -97,15 +107,15 @@ final class Update(config: UpdateConfiguration)
 		target match
 		{
 			case u: UpdateScala =>
-				addDependency(moduleID, ScalaOrg, CompilerModuleName, scalaVersion, "default", u.classifiers)
+				addDependency(moduleID, ScalaOrg, CompilerModuleName, scalaVersion, "default;optional(default)", u.classifiers)
 				addDependency(moduleID, ScalaOrg, LibraryModuleName, scalaVersion, "default", u.classifiers)
-				System.out.println("Getting Scala " + scalaVersion + " ...")
+				System.out.println("Getting Scala " + scalaVersion + " " + reason + "...")
 			case u: UpdateApp =>
 				val app = u.id
 				val resolvedName = if(app.crossVersioned) app.name + "_" + scalaVersion else app.name
 				addDependency(moduleID, app.groupID, resolvedName, app.getVersion, "default(compile)", u.classifiers)
 				excludeScala(moduleID)
-				System.out.println("Getting " + app.groupID + " " + resolvedName + " " + app.getVersion + " ...")
+				System.out.println("Getting " + app.groupID + " " + resolvedName + " " + app.getVersion + " " + reason + "...")
 		}
 		update(moduleID, target)
 	}
@@ -122,7 +132,8 @@ final class Update(config: UpdateConfiguration)
 	private def addDependency(moduleID: DefaultModuleDescriptor, organization: String, name: String, revision: String, conf: String, classifiers: List[String])
 	{
 		val dep = new DefaultDependencyDescriptor(moduleID, createID(organization, name, revision), false, false, true)
-		dep.addDependencyConfiguration(DefaultIvyConfiguration, conf)
+		for(c <- conf.split(";"))
+			dep.addDependencyConfiguration(DefaultIvyConfiguration, c)
 		for(classifier <- classifiers)
 			addClassifier(dep, name, classifier)
 		moduleID.addDependency(dep)
@@ -192,14 +203,23 @@ final class Update(config: UpdateConfiguration)
 	/** Add the scala tools repositories and a URL resolver to download sbt from the Google code project.*/
 	private def addResolvers(settings: IvySettings)
 	{
-		val newDefault = new ChainResolver
+		val newDefault = new ChainResolver {
+			override def locate(artifact: IArtifact) =
+				if(hasImplicitClassifier(artifact)) null else super.locate(artifact)
+		}
 		newDefault.setName("redefined-public")
 		if(repositories.isEmpty) error("No repositories defined.")
 		for(repo <- repositories if includeRepo(repo))
 			newDefault.add(toIvyRepository(settings, repo))
-		configureCache(settings, ivyCacheDirectory)
+		configureCache(settings)
 		settings.addResolver(newDefault)
 		settings.setDefaultResolver(newDefault.getName)
+	}
+	// infrastructure is needed to avoid duplication between this class and the ivy/ subproject
+	private def hasImplicitClassifier(artifact: IArtifact): Boolean =
+	{
+		import collection.JavaConversions._
+		artifact.getQualifiedExtraAttributes.keys.exists(_.asInstanceOf[String] startsWith "m:")
 	}
 	// exclude the local Maven repository for Scala -SNAPSHOTs
 	private def includeRepo(repo: Repository) = !(Repository.isMavenLocal(repo) && isSnapshot(scalaVersion) )
@@ -207,16 +227,14 @@ final class Update(config: UpdateConfiguration)
 	private[this] val Snapshot = "-SNAPSHOT"
 	private[this] val ChangingPattern = ".*" + Snapshot
 	private[this] val ChangingMatcher = PatternMatcher.REGEXP
-	private def configureCache(settings: IvySettings, dir: Option[File])
+	private def configureCache(settings: IvySettings)
 	{
-		val cacheDir = dir.getOrElse(settings.getDefaultRepositoryCacheBasedir())
-		val manager = new DefaultRepositoryCacheManager("default-cache", settings, cacheDir)
+		val manager = new DefaultRepositoryCacheManager("default-cache", settings, settings.getDefaultRepositoryCacheBasedir())
 		manager.setUseOrigin(true)
 		manager.setChangingMatcher(ChangingMatcher)
 		manager.setChangingPattern(ChangingPattern)
 		settings.addRepositoryCacheManager(manager)
 		settings.setDefaultRepositoryCacheManager(manager)
-		dir.foreach(dir => settings.setDefaultResolutionCacheBasedir(dir.getAbsolutePath))
 	}
 	private def toIvyRepository(settings: IvySettings, repo: Repository) =
 	{

@@ -11,7 +11,7 @@ import core.cache.DefaultRepositoryCacheManager
 import core.{IvyPatternHelper,LogOptions}
 import core.deliver.DeliverOptions
 import core.install.InstallOptions
-import core.module.descriptor.{DefaultArtifact, DefaultDependencyArtifactDescriptor, MDArtifact}
+import core.module.descriptor.{Artifact => IArtifact, DefaultArtifact, DefaultDependencyArtifactDescriptor, MDArtifact}
 import core.module.descriptor.{DefaultDependencyDescriptor, DefaultModuleDescriptor, DependencyDescriptor, ModuleDescriptor}
 import core.module.id.{ArtifactId,ModuleId, ModuleRevisionId}
 import core.publish.PublishOptions
@@ -19,13 +19,14 @@ import core.report.{ArtifactDownloadReport,ResolveReport}
 import core.resolve.ResolveOptions
 import core.retrieve.RetrieveOptions
 import plugins.parser.m2.{PomModuleDescriptorParser,PomModuleDescriptorWriter}
+import plugins.resolver.DependencyResolver
 
-final class PublishPatterns(val deliverIvyPattern: Option[String], val srcArtifactPatterns: Seq[String])
-final class PublishConfiguration(val patterns: PublishPatterns, val status: String, val resolverName: String, val configurations: Option[Seq[Configuration]], val logging: UpdateLogging.Value)
+final class DeliverConfiguration(val deliverIvyPattern: String, val status: String, val configurations: Option[Seq[Configuration]], val logging: UpdateLogging.Value)
+final class PublishConfiguration(val ivyFile: Option[File], val resolverName: String, val artifacts: Map[Artifact, File], val logging: UpdateLogging.Value)
 
-final class UpdateConfiguration(val retrieve: Option[RetrieveConfiguration], val logging: UpdateLogging.Value)
-final class RetrieveConfiguration(val retrieveDirectory: File, val outputPattern: String, val synchronize: Boolean)
-final class MakePomConfiguration(val file: File, val configurations: Option[Iterable[Configuration]] = None, val extra: NodeSeq = NodeSeq.Empty, val process: Node => Node = n => n, val filterRepositories: MavenRepository => Boolean = _ => true)
+final class UpdateConfiguration(val retrieve: Option[RetrieveConfiguration], val missingOk: Boolean, val logging: UpdateLogging.Value)
+final class RetrieveConfiguration(val retrieveDirectory: File, val outputPattern: String)
+final case class MakePomConfiguration(file: File, configurations: Option[Iterable[Configuration]] = None, extra: NodeSeq = NodeSeq.Empty, process: Node => Node = n => n, filterRepositories: MavenRepository => Boolean = _ => true)
 
 /** Configures logging during an 'update'.  `level` determines the amount of other information logged.
 * `Full` is the default and logs the most.
@@ -39,12 +40,12 @@ object UpdateLogging extends Enumeration
 object IvyActions
 {
 	/** Installs the dependencies of the given 'module' from the resolver named 'from' to the resolver named 'to'.*/
-	def install(module: IvySbt#Module, from: String, to: String)
+	def install(module: IvySbt#Module, from: String, to: String, log: Logger)
 	{
-		module.withModule { (ivy, md, default) =>
+		module.withModule(log) { (ivy, md, default) =>
 			for(dependency <- md.getDependencies)
 			{
-				module.logger.info("Installing " + dependency)
+				log.info("Installing " + dependency)
 				val options = new InstallOptions
 				options.setValidate(module.moduleSettings.validate)
 				options.setTransitive(dependency.isTransitive)
@@ -54,103 +55,131 @@ object IvyActions
 	}
 
 	/** Clears the Ivy cache, as configured by 'config'. */
-	def cleanCache(ivy: IvySbt) = ivy.withIvy { iv =>
+	def cleanCache(ivy: IvySbt, log: Logger) = ivy.withIvy(log) { iv =>
 		iv.getSettings.getResolutionCacheManager.clean()
 		iv.getSettings.getRepositoryCacheManagers.foreach(_.clean())
 	}
 
 	/** Creates a Maven pom from the given Ivy configuration*/
-	def makePom(module: IvySbt#Module, configuration: MakePomConfiguration)
+	def makePom(module: IvySbt#Module, configuration: MakePomConfiguration, log: Logger)
 	{
 		import configuration.{configurations, extra, file, filterRepositories, process}
-		module.withModule { (ivy, md, default) =>
+		module.withModule(log) { (ivy, md, default) =>
 			(new MakePom).write(ivy, md, configurations, extra, process, filterRepositories, file)
-			module.logger.info("Wrote " + file.getAbsolutePath)
+			log.info("Wrote " + file.getAbsolutePath)
 		}
 	}
 
-	def deliver(module: IvySbt#Module, configuration: PublishConfiguration)
+	def deliver(module: IvySbt#Module, configuration: DeliverConfiguration, log: Logger): File =
 	{
 		import configuration._
-		import patterns._
-		module.withModule { case (ivy, md, default) =>
-			resolve(logging)(ivy, md, default) // todo: set download = false for resolve
+		module.withModule(log) { case (ivy, md, default) =>
 			val revID = md.getModuleRevisionId
 			val options = DeliverOptions.newInstance(ivy.getSettings).setStatus(status)
 			options.setConfs(IvySbt.getConfigurations(md, configurations))
-			ivy.deliver(revID, revID.getRevision, getDeliverIvyPattern(patterns), options)
+			ivy.deliver(revID, revID.getRevision, deliverIvyPattern, options)
+			deliveredFile(ivy, deliverIvyPattern, md)
 		}
 	}
-	// because Ivy.deliver does not provide the delivered File location, we duplicate the logic here
-	def deliverFile(module: IvySbt#Module, configuration: PublishConfiguration): File =
-		module.withModule { (ivy,md,_) =>
-			ivy.getSettings.resolveFile(IvyPatternHelper.substitute(getDeliverIvyPattern(configuration.patterns), md.getResolvedModuleRevisionId))
-		}
-	def getDeliverIvyPattern(patterns: PublishPatterns) = patterns.deliverIvyPattern.getOrElse(error("No Ivy pattern specified"))
+	def deliveredFile(ivy: Ivy, pattern: String, md: ModuleDescriptor): File =
+		ivy.getSettings.resolveFile(IvyPatternHelper.substitute(pattern, md.getResolvedModuleRevisionId))
 
-	// todo: map configurations, extra dependencies
-	def publish(module: IvySbt#Module, configuration: PublishConfiguration)
+	def publish(module: IvySbt#Module, configuration: PublishConfiguration, log: Logger)
 	{
 		import configuration._
-		import patterns._
-		module.withModule { case (ivy, md, default) =>
-			val revID = md.getModuleRevisionId
-			val patterns = new java.util.ArrayList[String]
-			srcArtifactPatterns.foreach(pattern => patterns.add(pattern))
-			val options = (new PublishOptions).setOverwrite(true)
-			deliverIvyPattern.foreach(options.setSrcIvyPattern)
-			options.setConfs(IvySbt.getConfigurations(md, configurations))
-			ivy.publish(revID, patterns, resolverName, options)
+		module.withModule(log) { case (ivy, md, default) =>
+			val resolver = ivy.getSettings.getResolver(resolverName)
+			val ivyArtifact = ivyFile map { file => (MDArtifact.newIvyArtifact(md), file) }
+			val is = crossIvyScala(module.moduleSettings)
+			val as = mapArtifacts(md, is, artifacts) ++ ivyArtifact.toList
+			publish(md, as, resolver, overwrite = true)
 		}
+	}
+	private def crossIvyScala(moduleSettings: ModuleSettings): Option[IvyScala] =
+		moduleSettings match {
+			case i: InlineConfiguration if i.module.crossVersion => i.ivyScala
+			case e: EmptyConfiguration if e.module.crossVersion => e.ivyScala
+			case _ => None
+		}
+	def substituteCross(ivyScala: Option[IvyScala], artifacts: Seq[Artifact]): Seq[Artifact] =
+		ivyScala match { case None => artifacts; case Some(is) => IvySbt.substituteCrossA(artifacts, is.scalaVersion) }
+	def mapArtifacts(module: ModuleDescriptor, ivyScala: Option[IvyScala], artifacts: Map[Artifact, File]): Seq[(IArtifact, File)] =
+	{
+		val rawa = artifacts.keys.toSeq
+		val seqa = substituteCross(ivyScala, rawa)
+		val zipped = rawa zip IvySbt.mapArtifacts(module, seqa)
+		zipped map { case (a, ivyA) => (ivyA, artifacts(a)) }
 	}
 	/** Resolves and retrieves dependencies.  'ivyConfig' is used to produce an Ivy file and configuration.
 	* 'updateConfig' configures the actual resolution and retrieval process. */
-	def update(module: IvySbt#Module, configuration: UpdateConfiguration) =
-	{
-		module.withModule { case (ivy, md, default) =>
-			import configuration.{retrieve => rConf, logging}
-			val report = resolve(logging)(ivy, md, default)
-			rConf match
+	def update(module: IvySbt#Module, configuration: UpdateConfiguration, log: Logger): UpdateReport =
+		module.withModule(log) { case (ivy, md, default) =>
+			val (report, err) = resolve(configuration.logging)(ivy, md, default)
+			err match
 			{
-				case None => IvyRetrieve.cachePaths(report)
-				case Some(conf) => retrieve(ivy, md, conf, logging)
+				case Some(x) if !configuration.missingOk => throw x
+				case _ =>
+					val cachedDescriptor = ivy.getSettings.getResolutionCacheManager.getResolvedIvyFileInCache(md.getModuleRevisionId)
+					val uReport = IvyRetrieve.updateReport(report, cachedDescriptor)
+					configuration.retrieve match
+					{
+						case Some(rConf) => retrieve(ivy, uReport, rConf)
+						case None => uReport
+					}
 			}
 		}
-	}
-	// doesn't work.  perhaps replace retrieve/determineArtifactsToCopy with custom code
-	private def retrieve(ivy: Ivy, md: ModuleDescriptor, conf: RetrieveConfiguration, logging: UpdateLogging.Value) =
+
+	def transitiveScratch(ivySbt: IvySbt, id: ModuleID, label: String, deps: Seq[ModuleID], classifiers: Seq[String], c: UpdateConfiguration, ivyScala: Option[IvyScala], log: Logger): UpdateReport =
 	{
-			import conf._
-			val retrieveOptions = new RetrieveOptions
-			retrieveOptions.setSync(synchronize)
-			val patternBase = retrieveDirectory.getAbsolutePath
-			val pattern =
-				if(patternBase.endsWith(File.separator))
-					patternBase + outputPattern
-				else
-					patternBase + File.separatorChar + outputPattern
-
-			val engine = ivy.getRetrieveEngine
-			engine.retrieve(md.getModuleRevisionId, pattern, retrieveOptions)
-
-			//TODO: eliminate the duplication for better efficiency (retrieve already calls determineArtifactsToCopy once)
-			val rawMap = engine.determineArtifactsToCopy(md.getModuleRevisionId, pattern, retrieveOptions)
-			val map = rawMap.asInstanceOf[java.util.Map[ArtifactDownloadReport,java.util.Set[String]]]
-			val confMap = new collection.mutable.HashMap[String, Seq[File]]
-
-				import collection.JavaConversions.{asScalaMap,asScalaSet}
-			for( (report, all) <- map; retrieved <- all; val file = new File(retrieved); conf <- report.getArtifact.getConfigurations)
-				confMap.put(conf, file +: confMap.getOrElse(conf, Nil))
-			confMap.toMap
+		val base = id.copy(name = id.name + "$" + label)
+		val module = new ivySbt.Module(InlineConfiguration(base, deps).copy(ivyScala = ivyScala))
+		val report = update(module, c, log)
+		transitive(ivySbt, id, report, classifiers, c, ivyScala, log)
 	}
-	private def resolve(logging: UpdateLogging.Value)(ivy: Ivy, module: DefaultModuleDescriptor, defaultConf: String): ResolveReport =
+	def transitive(ivySbt: IvySbt, module: ModuleID, report: UpdateReport, classifiers: Seq[String], c: UpdateConfiguration, ivyScala: Option[IvyScala], log: Logger): UpdateReport =
+		updateClassifiers(ivySbt, module, report.allModules, classifiers, new UpdateConfiguration(c.retrieve, true, c.logging), ivyScala, log)
+	def updateClassifiers(ivySbt: IvySbt, id: ModuleID, modules: Seq[ModuleID], classifiers: Seq[String], configuration: UpdateConfiguration, ivyScala: Option[IvyScala], log: Logger): UpdateReport =
+	{
+		assert(!classifiers.isEmpty, "classifiers cannot be empty")
+		val baseModules = modules map { m => ModuleID(m.organization, m.name, m.revision, crossVersion = m.crossVersion) }
+		val deps = baseModules.distinct map { m => m.copy(explicitArtifacts = classifiers map { c => Artifact(m.name, c) }) }
+		val base = id.copy(name = id.name + classifiers.mkString("$","_",""))
+		val module = new ivySbt.Module(InlineConfiguration(base, deps).copy(ivyScala = ivyScala))
+		update(module, configuration, log)
+	}
+	private def resolve(logging: UpdateLogging.Value)(ivy: Ivy, module: DefaultModuleDescriptor, defaultConf: String): (ResolveReport, Option[ResolveException]) =
 	{
 		val resolveOptions = new ResolveOptions
 		resolveOptions.setLog(ivyLogLevel(logging))
 		val resolveReport = ivy.resolve(module, resolveOptions)
-		if(resolveReport.hasError)
-			throw new ResolveException(resolveReport.getAllProblemMessages.toArray.map(_.toString).distinct)
-		resolveReport
+		val err =
+			if(resolveReport.hasError)
+				Some(new ResolveException(resolveReport.getAllProblemMessages.toArray.map(_.toString).distinct))
+			else None
+		(resolveReport, err)
+	}
+	private def retrieve(ivy: Ivy, report: UpdateReport, config: RetrieveConfiguration): UpdateReport =
+		retrieve(ivy, report, config.retrieveDirectory, config.outputPattern)
+	
+	private def retrieve(ivy: Ivy, report: UpdateReport, base: File, pattern: String): UpdateReport =
+	{
+		val toCopy = new collection.mutable.HashSet[(File,File)]
+		val retReport = report retrieve { (conf, mid, art, cached) =>
+			val to = retrieveTarget(conf, mid, art, base, pattern)
+			toCopy += ((cached, to))
+			to
+		}
+		IO.copy( toCopy )
+		retReport
+	}
+	private def retrieveTarget(conf: String, mid: ModuleID, art: Artifact, base: File, pattern: String): File =
+		new File(base, substitute(conf, mid, art, pattern))
+
+	private def substitute(conf: String, mid: ModuleID, art: Artifact, pattern: String): String =
+	{
+		val mextra = IvySbt.javaMap(mid.extraAttributes, true)
+		val aextra = IvySbt.extra(art, true)
+		IvyPatternHelper.substitute(pattern, mid.organization, mid.name, mid.revision, art.name, art.`type`, art.extension, conf, mextra, aextra)
 	}
 
 	import UpdateLogging.{Quiet, Full, DownloadOnly}
@@ -162,5 +191,18 @@ object IvyActions
 			case DownloadOnly => LOG_DOWNLOAD_ONLY
 			case Full => LOG_DEFAULT
 		}
+
+	def publish(module: ModuleDescriptor, artifacts: Iterable[(IArtifact, File)], resolver: DependencyResolver, overwrite: Boolean): Unit =
+		try {
+			resolver.beginPublishTransaction(module.getModuleRevisionId(), overwrite);
+			for( (artifact, file) <- artifacts) if(file.exists)
+				resolver.publish(artifact, file, overwrite)
+			resolver.commitPublishTransaction()
+		} catch {
+			case e =>
+				try { resolver.abortPublishTransaction() }
+				finally { throw e }
+		}
+
 }
 final class ResolveException(messages: Seq[String]) extends RuntimeException(messages.mkString("\n"))

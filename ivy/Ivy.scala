@@ -7,34 +7,38 @@ import Artifact.{defaultExtension, defaultType}
 
 import java.io.File
 import java.util.concurrent.Callable
+import java.util.{Collection, Collections}
 
 import org.apache.ivy.{core, plugins, util, Ivy}
 import core.IvyPatternHelper
-import core.cache.DefaultRepositoryCacheManager
-import core.module.descriptor.{DefaultArtifact, DefaultDependencyArtifactDescriptor, MDArtifact}
-import core.module.descriptor.{DefaultDependencyDescriptor, DefaultModuleDescriptor,  ModuleDescriptor}
+import core.cache.{CacheMetadataOptions, DefaultRepositoryCacheManager}
+import core.module.descriptor.{Artifact => IArtifact, DefaultArtifact, DefaultDependencyArtifactDescriptor, MDArtifact}
+import core.module.descriptor.{DefaultDependencyDescriptor, DefaultModuleDescriptor, DependencyDescriptor, ModuleDescriptor}
 import core.module.id.{ArtifactId,ModuleId, ModuleRevisionId}
+import core.resolve.IvyNode
 import core.settings.IvySettings
+import plugins.conflict.{ConflictManager, LatestConflictManager}
+import plugins.latest.LatestRevisionStrategy
 import plugins.matcher.PatternMatcher
 import plugins.parser.m2.PomModuleDescriptorParser
-import plugins.resolver.ChainResolver
-import util.Message
+import plugins.resolver.{ChainResolver, DependencyResolver}
+import util.{Message, MessageLogger}
 
 import scala.xml.NodeSeq
 
 final class IvySbt(val configuration: IvyConfiguration)
 {
-	import configuration.{log, baseDirectory}
+		import configuration.baseDirectory
+
 	/** ========== Configuration/Setup ============
 	* This part configures the Ivy instance by first creating the logger interface to ivy, then IvySettings, and then the Ivy instance.
 	* These are lazy so that they are loaded within the right context.  This is important so that no Ivy XML configuration needs to be loaded,
 	* saving some time.  This is necessary because Ivy has global state (IvyContext, Message, DocumentBuilder, ...).
 	*/
-	private lazy val logger = new IvyLoggerInterface(log)
-	private def withDefaultLogger[T](f: => T): T =
+	private def withDefaultLogger[T](logger: MessageLogger)(f: => T): T =
 	{
 		def action() =
-			IvySbt.synchronized 
+			IvySbt.synchronized
 			{
 				val originalLogger = Message.getDefaultLogger
 				Message.setDefaultLogger(logger)
@@ -44,33 +48,36 @@ final class IvySbt(val configuration: IvyConfiguration)
 		// Ivy is not thread-safe nor can the cache be used concurrently.
 		// If provided a GlobalLock, we can use that to ensure safe access to the cache.
 		// Otherwise, we can at least synchronize within the JVM.
-		//   For thread-safety In particular, Ivy uses a static DocumentBuilder, which is not thread-safe.
+		//   For thread-safety in particular, Ivy uses a static DocumentBuilder, which is not thread-safe.
 		configuration.lock match
 		{
 			case Some(lock) => lock(ivyLockFile, new Callable[T] { def call = action() })
 			case None => action()
 		}
 	}
-	private lazy val settings =
+	private lazy val settings: IvySettings =
 	{
 		val is = new IvySettings
 		is.setBaseDir(baseDirectory)
+		is.setDefaultConflictManager(IvySbt.latestNoForce(is))
 		configuration match
 		{
 			case e: ExternalIvyConfiguration => is.load(e.file)
-			case i: InlineIvyConfiguration => 
-				IvySbt.configureCache(is, i.paths.cacheDirectory, i.localOnly)
-				IvySbt.setResolvers(is, i.resolvers, i.otherResolvers, i.localOnly, log)
+			case i: InlineIvyConfiguration =>
+				is.setVariable("ivy.checksums", i.checksums mkString ",")
+				i.paths.ivyHome foreach is.setDefaultIvyUserDir
+				IvySbt.configureCache(is, i.localOnly)
+				IvySbt.setResolvers(is, i.resolvers, i.otherResolvers, i.localOnly, configuration.log)
 				IvySbt.setModuleConfigurations(is, i.moduleConfigurations)
 		}
 		is
 	}
-	private lazy val ivy =
+	private lazy val ivy: Ivy =
 	{
 		val i = new Ivy() { private val loggerEngine = new SbtMessageLoggerEngine; override def getLoggerEngine = loggerEngine }
 		i.setSettings(settings)
 		i.bind()
-		i.getLoggerEngine.pushLogger(logger)
+		i.getLoggerEngine.pushLogger(new IvyLoggerInterface(configuration.log))
 		i
 	}
 	// Must be the same file as is used in Update in the launcher
@@ -78,27 +85,38 @@ final class IvySbt(val configuration: IvyConfiguration)
 	/** ========== End Configuration/Setup ============*/
 
 	/** Uses the configured Ivy instance within a safe context.*/
-	def withIvy[T](f: Ivy => T): T =
-		withDefaultLogger
+	def withIvy[T](log: Logger)(f: Ivy => T): T =
+		withIvy(new IvyLoggerInterface(log))(f)
+
+	def withIvy[T](log: MessageLogger)(f: Ivy => T): T =
+		withDefaultLogger(log)
 		{
 			ivy.pushContext()
+			ivy.getLoggerEngine.pushLogger(log)
 			try { f(ivy) }
-			finally { ivy.popContext() }
+			finally {
+				ivy.getLoggerEngine.popLogger()
+				ivy.popContext()
+			}
 		}
 
-	final class Module(val moduleSettings: ModuleSettings)
+	final class Module(rawModuleSettings: ModuleSettings)
 	{
+		val moduleSettings: ModuleSettings = IvySbt.substituteCross(rawModuleSettings)
 		def owner = IvySbt.this
-		def logger = configuration.log
-		def withModule[T](f: (Ivy,DefaultModuleDescriptor,String) => T): T =
-			withIvy[T] { ivy => f(ivy, moduleDescriptor, defaultConfig) }
+		def withModule[T](log: Logger)(f: (Ivy,DefaultModuleDescriptor,String) => T): T =
+			withIvy[T](log) { ivy => f(ivy, moduleDescriptor0, defaultConfig0) }
 
-		lazy val (moduleDescriptor: DefaultModuleDescriptor, defaultConfig: String) =
+		def moduleDescriptor(log: Logger): DefaultModuleDescriptor = withModule(log)((_,md,_) => md)
+		def defaultConfig(log: Logger): String = withModule(log)( (_,_,dc) => dc)
+		// these should only be referenced by withModule because lazy vals synchronize on this object
+		// withIvy explicitly locks the IvySbt object, so they have to be done in the right order to avoid deadlock
+		private[this] lazy val (moduleDescriptor0: DefaultModuleDescriptor, defaultConfig0: String) =
 		{
 			val (baseModule, baseConfiguration) =
 				moduleSettings match
 				{
-					case ic: InlineConfiguration => configureInline(ic)
+					case ic: InlineConfiguration => configureInline(ic, configuration.log)
 					case ec: EmptyConfiguration => configureEmpty(ec.module)
 					case pc: PomConfiguration => readPom(pc.file, pc.validate)
 					case ifc: IvyFileConfiguration => readIvyFile(ifc.file, ifc.validate)
@@ -107,7 +125,7 @@ final class IvySbt(val configuration: IvyConfiguration)
 			baseModule.getExtraAttributesNamespaces.asInstanceOf[java.util.Map[String,String]].put("e", "http://ant.apache.org/ivy/extra")
 			(baseModule, baseConfiguration)
 		}
-		private def configureInline(ic: InlineConfiguration) =
+		private def configureInline(ic: InlineConfiguration, log: Logger) =
 		{
 			import ic._
 			val moduleID = newConfiguredModuleID(module, configurations)
@@ -165,6 +183,7 @@ private object IvySbt
 	val DefaultIvyConfigFilename = "ivysettings.xml"
 	val DefaultIvyFilename = "ivy.xml"
 	val DefaultMavenFilename = "pom.xml"
+	val DefaultChecksums = Seq("sha1", "md5")
 
 	def defaultIvyFile(project: File) = new File(project, DefaultIvyFilename)
 	def defaultIvyConfiguration(project: File) = new File(project, DefaultIvyConfigFilename)
@@ -176,7 +195,7 @@ private object IvySbt
 	{
 		def makeChain(label: String, name: String, rs: Seq[Resolver]) = {
 			log.debug(label + " repositories:")
-			val chain = resolverChain(name, rs, localOnly, log)
+			val chain = resolverChain(name, rs, localOnly, settings, log)
 			settings.addResolver(chain)
 			chain
 		}
@@ -184,17 +203,31 @@ private object IvySbt
 		val mainChain = makeChain("Default", "sbt-chain", resolvers)
 		settings.setDefaultResolver(mainChain.getName)
 	}
-	private def resolverChain(name: String, resolvers: Seq[Resolver], localOnly: Boolean, log: Logger): ChainResolver =
+	private def resolverChain(name: String, resolvers: Seq[Resolver], localOnly: Boolean, settings: IvySettings, log: Logger): DependencyResolver =
 	{
-		val newDefault = new ChainResolver
+		val newDefault = new ChainResolver {
+			// Technically, this should be applied to module configurations.
+			// That would require custom subclasses of all resolver types in ConvertResolver (a delegation approach does not work).
+			// It would be better to get proper support into Ivy.
+			override def locate(artifact: IArtifact) =
+				if(hasImplicitClassifier(artifact)) null else super.locate(artifact)
+		}
 		newDefault.setName(name)
 		newDefault.setReturnFirst(true)
 		newDefault.setCheckmodified(false)
 		for(sbtResolver <- resolvers) {
 			log.debug("\t" + sbtResolver)
-			newDefault.add(ConvertResolver(sbtResolver))
+			newDefault.add(ConvertResolver(sbtResolver)(settings))
 		}
 		newDefault
+	}
+	/** A hack to detect if the given artifact is an automatically generated request for a classifier,
+	* as opposed to a user-initiated declaration.  It relies on Ivy prefixing classifier with m:, while sbt uses e:.
+	* Clearly, it would be better to have an explicit option in Ivy to control this.*/
+	def hasImplicitClassifier(artifact: IArtifact): Boolean =
+	{
+		import collection.JavaConversions._
+		artifact.getQualifiedExtraAttributes.keys.exists(_.asInstanceOf[String] startsWith "m:")
 	}
 	private def setModuleConfigurations(settings: IvySettings, moduleConfigurations: Seq[ModuleConfiguration])
 	{
@@ -205,15 +238,18 @@ private object IvySbt
 			import IvyPatternHelper._
 			import PatternMatcher._
 			if(!existing.contains(resolver.name))
-				settings.addResolver(ConvertResolver(resolver))
+				settings.addResolver(ConvertResolver(resolver)(settings))
 			val attributes = javaMap(Map(MODULE_KEY -> name, ORGANISATION_KEY -> organization, REVISION_KEY -> revision))
 			settings.addModuleConfiguration(attributes, settings.getMatcher(EXACT_OR_REGEXP), resolver.name, null, null, null)
 		}
 	}
-	private def configureCache(settings: IvySettings, dir: Option[File], localOnly: Boolean)
+	private def configureCache(settings: IvySettings, localOnly: Boolean)
 	{
-		val cacheDir = dir.getOrElse(settings.getDefaultRepositoryCacheBasedir())
-		val manager = new DefaultRepositoryCacheManager("default-cache", settings, cacheDir)
+		val cacheDir = settings.getDefaultRepositoryCacheBasedir()
+		val manager = new DefaultRepositoryCacheManager("default-cache", settings, cacheDir) {
+			override def findModuleInCache(dd: DependencyDescriptor, revId: ModuleRevisionId, options: CacheMetadataOptions, r: String) =
+				super.findModuleInCache(dd,revId,options,null)
+		}
 		manager.setUseOrigin(true)
 		if(localOnly)
 			manager.setDefaultTTL(java.lang.Long.MAX_VALUE);
@@ -224,7 +260,6 @@ private object IvySbt
 		}
 		settings.addRepositoryCacheManager(manager)
 		settings.setDefaultRepositoryCacheManager(manager)
-		dir.foreach(dir => settings.setDefaultResolutionCacheBasedir(dir.getAbsolutePath))
 	}
 	def toIvyConfiguration(configuration: Configuration) =
 	{
@@ -246,19 +281,45 @@ private object IvySbt
 		import m._
 		ModuleRevisionId.newInstance(organization, name, revision, javaMap(extraAttributes))
 	}
+
+	private def substituteCross(m: ModuleSettings): ModuleSettings =
+		m.ivyScala match { case None => m; case Some(is) => substituteCross(m, is.scalaVersion) }
+	private def substituteCross(m: ModuleSettings, cross: String): ModuleSettings =
+		m match {
+			case ec: EmptyConfiguration => ec.copy(module = substituteCross(ec.module, cross))
+			case ic: InlineConfiguration => ic.copy(module = substituteCross(ic.module, cross), dependencies = substituteCrossM(ic.dependencies, cross))
+			case _ => m
+		}
+	def crossName(name: String, cross: String): String =
+		name + "_" + cross
+	def substituteCross(a: Artifact, cross: String): Artifact =
+		a.copy(name = crossName(a.name, cross))
+	def substituteCrossA(as: Seq[Artifact], cross: String): Seq[Artifact] =
+		as.map(art => substituteCross(art, cross))
+	def substituteCrossM(ms: Seq[ModuleID], cross: String): Seq[ModuleID] =
+		ms.map(m => substituteCross(m, cross))
+	def substituteCross(m: ModuleID, cross: String): ModuleID =
+		if(m.crossVersion)
+			m.copy(name = crossName(m.name, cross), explicitArtifacts = substituteCrossA(m.explicitArtifacts, cross))
+		else
+			m
+		
 	private def toIvyArtifact(moduleID: ModuleDescriptor, a: Artifact, configurations: Iterable[String]): MDArtifact =
 	{
-		val artifact = new MDArtifact(moduleID, a.name, a.`type`, a.extension, null, extra(a))
+		val artifact = new MDArtifact(moduleID, a.name, a.`type`, a.extension, null, extra(a, false))
 		configurations.foreach(artifact.addConfiguration)
 		artifact
 	}
-	private def extra(artifact: Artifact) =
+	private[sbt] def extra(artifact: Artifact, unqualify: Boolean = false): java.util.Map[String, String] =
 	{
 		val ea = artifact.classifier match { case Some(c) => artifact.extra("e:classifier" -> c); case None => artifact }
-		javaMap(ea.extraAttributes)
+		javaMap(ea.extraAttributes, unqualify)
 	}
-	private def javaMap(map: Map[String,String]) =
+	private[sbt] def javaMap(m: Map[String,String], unqualify: Boolean = false) =
+	{
+		val map = if(unqualify) m map { case (k, v) => (k.stripPrefix("e:"), v) } else m
 		if(map.isEmpty) null else scala.collection.JavaConversions.asJavaMap(map)
+	}
 
 	private object javaMap
 	{
@@ -275,7 +336,7 @@ private object IvySbt
 	{
 		import module._
 		<ivy-module version="2.0">
-			{ if(hasInfo(dependencies))
+			{ if(hasInfo(module, dependencies))
 				NodeSeq.Empty
 			else
 				<info organisation={organization} module={name} revision={revision}/>
@@ -287,7 +348,24 @@ private object IvySbt
 			}
 		</ivy-module>
 	}
-	private def hasInfo(x: scala.xml.NodeSeq) = !(<g>{x}</g> \ "info").isEmpty
+	private def hasInfo(module: ModuleID, x: scala.xml.NodeSeq) =
+	{
+		val info = <g>{x}</g> \ "info"
+		if(!info.isEmpty)
+		{
+			def check(found: NodeSeq, expected: String, label: String) =
+				if(found.isEmpty)
+					error("Missing " + label + " in inline Ivy XML.")
+				else {
+					val str = found.text
+					if(str != expected) error("Inconsistent " + label + " in inline Ivy XML.  Expected '" + expected + "', got '" + str + "'")
+				}
+			check(info \ "@organisation", module.organization, "organisation")
+			check(info \ "@module", module.name, "name")
+			check(info \ "@revision", module.revision, "version")
+		}
+		!info.isEmpty
+	}
 	/** Parses the given in-memory Ivy file 'xml', using the existing 'moduleID' and specifying the given 'defaultConfiguration'. */
 	private def parseIvyXML(settings: IvySettings, xml: scala.xml.NodeSeq, moduleID: DefaultModuleDescriptor, defaultConfiguration: String, validate: Boolean): CustomXmlParser.CustomParser =
 		parseIvyXML(settings,  xml.toString, moduleID, defaultConfiguration, validate)
@@ -327,10 +405,14 @@ private object IvySbt
 		}
 	}
 	/** This method is used to add inline artifacts to the provided module. */
-	def addArtifacts(moduleID: DefaultModuleDescriptor, artifacts: Iterable[Artifact])
+	def addArtifacts(moduleID: DefaultModuleDescriptor, artifacts: Iterable[Artifact]): Unit =
+		for(art <- mapArtifacts(moduleID, artifacts.toSeq); c <- art.getConfigurations)
+			moduleID.addArtifact(c, art)
+
+	def mapArtifacts(moduleID: ModuleDescriptor, artifacts: Seq[Artifact]): Seq[IArtifact] =
 	{
 		lazy val allConfigurations = moduleID.getPublicConfigurationsNames
-		for(artifact <- artifacts)
+		for(artifact <- artifacts) yield
 		{
 			val configurationStrings: Iterable[String] =
 			{
@@ -340,10 +422,10 @@ private object IvySbt
 				else
 					artifactConfigurations.map(_.name)
 			}
-			val ivyArtifact = toIvyArtifact(moduleID, artifact, configurationStrings)
-			configurationStrings.foreach(configuration => moduleID.addArtifact(configuration, ivyArtifact))
+			toIvyArtifact(moduleID, artifact, configurationStrings)
 		}
 	}
+
 	/** This code converts the given ModuleDescriptor to a DefaultModuleDescriptor by casting or generating an error.
 	* Ivy 2.0.0 always produces a DefaultModuleDescriptor. */
 	private def toDefaultModuleDescriptor(md: ModuleDescriptor) =
@@ -358,4 +440,36 @@ private object IvySbt
 			case Some(confs) => confs.map(_.name).toList.toArray
 			case None => module.getPublicConfigurationsNames
 		}
+
+	// same as Ivy's builtin latest-revision manager except that it ignores the force setting,
+	//   which seems to be added to dependencies read from poms (perhaps only in certain circumstances)
+	//   causing revisions of indirect dependencies other than latest to be selected
+	def latestNoForce(settings: IvySettings): ConflictManager =
+	{
+			import collection.JavaConversions._
+
+		new LatestConflictManager("latest-revision-no-force", new LatestRevisionStrategy)
+		{
+			setSettings(settings)
+
+			override def resolveConflicts(parent: IvyNode, conflicts: Collection[_]): Collection[_] =
+				if(conflicts.size < 2)
+					conflicts
+				else
+					resolveMultiple(parent, conflicts.asInstanceOf[Collection[IvyNode]]).asInstanceOf[Collection[_]]
+
+			def resolveMultiple(parent: IvyNode, conflicts: Collection[IvyNode]): Collection[IvyNode] =
+			{
+				val matcher = settings.getVersionMatcher
+				val dynamic = conflicts.exists { node => matcher.isDynamic(node.getResolvedId) }
+				if(dynamic) null else {
+					try {
+						val l = getStrategy.findLatest(toArtifactInfo(conflicts), null).asInstanceOf[{def getNode(): IvyNode}]
+						if(l eq null) conflicts else Collections.singleton(l.getNode)
+					} 
+					catch { case e: LatestConflictManager.NoConflictResolvedYetException => null }
+				}
+			}
+		}
+	}
 }

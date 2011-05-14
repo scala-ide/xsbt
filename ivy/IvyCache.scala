@@ -74,7 +74,7 @@ object IvyCache
 	def withDefaultCache[T](lock: Option[xsbti.GlobalLock], log: Logger)(f: DefaultRepositoryCacheManager => T): T =
 	{
 		val (ivy, local) = basicLocalIvy(lock, log)
-		ivy.withIvy { ivy =>
+		ivy.withIvy(log) { ivy =>
 			val cache = ivy.getSettings.getDefaultRepositoryCacheManager.asInstanceOf[DefaultRepositoryCacheManager]
 			cache.setUseOrigin(false)
 			f(cache)
@@ -84,9 +84,9 @@ object IvyCache
 	/** A minimal Ivy setup with only a local resolver and the current directory as the base directory.*/
 	private def basicLocalIvy(lock: Option[xsbti.GlobalLock], log: Logger) =
 	{
-		val local = Resolver.defaultLocal(None)
+		val local = Resolver.defaultLocal
 		val paths = new IvyPaths(new File("."), None)
-		val conf = new InlineIvyConfiguration(paths, Seq(local), Nil, Nil, false, lock, log)
+		val conf = new InlineIvyConfiguration(paths, Seq(local), Nil, Nil, false, lock, IvySbt.DefaultChecksums, log)
 		(new IvySbt(conf), local)
 	}
 	/** Creates a default jar artifact based on the given ID.*/

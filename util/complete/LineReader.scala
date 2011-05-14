@@ -2,7 +2,11 @@
  * Copyright 2008, 2009  Mark Harrah
  */
 package sbt
-import jline.{Completor, ConsoleReader}
+
+	import jline.{Completor, ConsoleReader}
+	import java.io.File
+	import complete.Parser
+	
 abstract class JLine extends LineReader
 {
 	protected[this] val reader: ConsoleReader
@@ -37,10 +41,10 @@ private object JLine
 			try { action }
 			finally { t.enableEcho() }
 		}
-	private[sbt] def initializeHistory(cr: ConsoleReader, historyPath: Option[Path]): Unit =
+	private[sbt] def initializeHistory(cr: ConsoleReader, historyPath: Option[File]): Unit =
 		for(historyLocation <- historyPath)
 		{
-			val historyFile = historyLocation.asFile
+			val historyFile = historyLocation.getAbsoluteFile
 			ErrorHandling.wideConvert
 			{
 				historyFile.getParentFile.mkdirs()
@@ -49,33 +53,27 @@ private object JLine
 				history.setHistoryFile(historyFile)
 			}
 		}
-	def simple(historyPath: Option[Path]): SimpleReader = new SimpleReader(historyPath)
+	def simple(historyPath: Option[File]): SimpleReader = new SimpleReader(historyPath)
 	val MaxHistorySize = 500
 }
 
-trait LineReader extends NotNull
+trait LineReader
 {
 	def readLine(prompt: String): Option[String]
 }
-private[sbt] final class LazyJLineReader(historyPath: Option[Path], completor: => Completor) extends JLine
+final class FullReader(historyPath: Option[File], complete: Parser[_]) extends JLine
 {
 	protected[this] val reader =
 	{
 		val cr = new ConsoleReader
 		cr.setBellEnabled(false)
 		JLine.initializeHistory(cr, historyPath)
-		cr.addCompletor(new LazyCompletor(completor))
+		sbt.complete.JLineCompletion.installCustomCompletor(cr, complete)
 		cr
 	}
 }
-private class LazyCompletor(delegate0: => Completor) extends Completor
-{
-	private lazy val delegate = delegate0
-	def complete(buffer: String, cursor: Int, candidates: java.util.List[_]): Int =
-		delegate.complete(buffer, cursor, candidates)
-}
 
-class SimpleReader private[sbt] (historyPath: Option[Path]) extends JLine
+class SimpleReader private[sbt] (historyPath: Option[File]) extends JLine
 {
 	protected[this] val reader = JLine.createReader()
 	JLine.initializeHistory(reader, historyPath)

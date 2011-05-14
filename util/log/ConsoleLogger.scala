@@ -1,9 +1,9 @@
 /* sbt -- Simple Build Tool
- * Copyright 2008, 2009, 2010 Mark Harrah
+ * Copyright 2008, 2009, 2010, 2011 Mark Harrah
  */
 package sbt
 
-	import java.io.{PrintStream, PrintWriter}
+	import java.io.{BufferedWriter, PrintStream, PrintWriter}
 
 object ConsoleLogger
 {
@@ -17,8 +17,14 @@ object ConsoleLogger
 	def printWriterOut(out: PrintWriter): ConsoleOut = new ConsoleOut {
 		val lockObject = out
 		def print(s: String) = out.print(s)
-		def println(s: String) = out.println(s)
-		def println() = out.println()
+		def println(s: String) = { out.println(s); out.flush() }
+		def println() = { out.println(); out.flush() }
+	}
+	def bufferedWriterOut(out: BufferedWriter): ConsoleOut = new ConsoleOut {
+		val lockObject = out
+		def print(s: String) = out.write(s)
+		def println(s: String) = { out.write(s); println() }
+		def println() = { out.newLine(); out.flush() }
 	}
 
 	val formatEnabled =
@@ -60,7 +66,7 @@ class ConsoleLogger private[ConsoleLogger](val out: ConsoleOut, override val ans
 	def successMessageColor = Console.RESET
 	override def success(message: => String)
 	{
-		if(atLevel(Level.Info))
+		if(successEnabled)
 			log(successLabelColor, Level.SuccessLabel, successMessageColor, message)
 	}
 	def trace(t: => Throwable): Unit =

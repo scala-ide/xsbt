@@ -2,7 +2,7 @@
  * Copyright 2008, 2009, 2010  Mark Harrah, Seth Tisue
  */
 package sbt
-package compile
+package compiler
 
 	import java.io.File
 
@@ -18,7 +18,7 @@ object JavaCompiler
 		new JavaCompiler {
 			def apply(sources: Seq[File], classpath: Seq[File], outputDirectory: File, options: Seq[String])(implicit log: Logger) {
 				val augmentedClasspath = if(cp.autoBoot) classpath ++ Seq(scalaInstance.libraryJar) else classpath
-				val javaCp = new ClasspathOptions(false, cp.compiler, false)
+				val javaCp = new ClasspathOptions(false, cp.compiler, false, false)
 				val arguments = (new CompilerArguments(scalaInstance, javaCp))(sources, augmentedClasspath, outputDirectory, options)
 				log.debug("running javac with arguments:\n\t" + arguments.mkString("\n\t"))
 				val code: Int = f(arguments, log)

@@ -11,12 +11,16 @@ import Path._
 
 object CommandSupport
 {
-	def logger(s: State) = s match {
-		case State(p: Logged) => p.log
-		case _ => ConsoleLogger() //TODO: add a default logger to State
-	}
-	def notReadable(files: Seq[File]): Seq[File] = files filter { !_.canRead }
-	def readable(files: Seq[File]): Seq[File] = files filter { _.canRead }
+	def logger(s: State) = s get Keys.logged getOrElse ConsoleLogger()
+
+	// slightly better fallback in case of older launcher
+	def bootDirectory(state: State): File =
+		try { state.configuration.provider.scalaProvider.launcher.bootDirectory }
+		catch { case e: NoSuchMethodError => new File(".").getAbsoluteFile }
+
+	private def canRead = (_: File).canRead
+	def notReadable(files: Seq[File]): Seq[File] = files filterNot canRead
+	def readable(files: Seq[File]): Seq[File] = files filter canRead
 	def sbtRCs(s: State): Seq[File] =
 		(Path.userHome / sbtrc) ::
 		(s.baseDir / sbtrc asFile) ::
@@ -35,9 +39,72 @@ object CommandSupport
 	val Exit = "exit"
 	val Quit = "quit"
 
-	/** The list of command names that may be used to terminate the program.*/
-	val TerminateActions: Seq[String] = Seq(Exit, Quit)
+	val EvalCommand = "eval"
+	val evalBrief = (EvalCommand + " <expression>", "Evaluates the given Scala expression and prints the result and type.")
+	val evalDetailed =
+EvalCommand + """ <expression>
+	Evaluates the given Scala expression and prints the result and type.
+"""
 
+	val LastCommand = "last"
+	val LastGrepCommand = "last-grep"
+
+	val lastGrepBrief = (LastGrepCommand + " <pattern> <key>", "Shows lines from the last output for 'key' that match 'pattern'.")
+	val lastGrepDetailed = 
+LastGrepCommand + """ <pattern> [key]
+
+	<pattern> is a regular expression interpreted by java.util.Pattern.
+	Lines that match 'pattern' from the last streams output associated with the key are displayed.
+	If no key is specified, the global streams output is used.
+	See also """ + LastCommand + "."
+
+	val lastBrief = (LastCommand + " <key>", "Prints the last output associated with 'key'.")
+	val lastDetailed = 
+LastCommand + """ <key>
+
+	Redisplays the last streams output associated with the key (typically a task key).
+	If no key is specified, the global streams output is displayed.
+	See also """ + LastGrepCommand + "."
+
+	val InspectCommand = "inspect"
+	val inspectBrief = (InspectCommand + " <key>", "Prints the value for 'key', the defining scope, delegates, related definitions, and dependencies.")
+	val inspectDetailed =
+InspectCommand + """ <key>
+
+	For a plain setting, the value bound to the key argument is displayed using its toString method.
+	Otherwise, the type of task ("Task" or "Input task") is displayed.
+	
+	"Dependencies" shows the settings that this setting depends on.
+	"Reverse dependencies" shows the settings that depend on this setting.
+
+	When a key is resolved to a value, it may not actually be defined in the requested scope.
+	In this case, there is a defined search sequence.
+	"Delegates" shows the scopes that are searched for the key.
+	"Provided by" shows the scope that contained the value returned for the key.
+
+	"Related" shows all of the scopes in which the key is defined.
+"""
+	
+	val SetCommand = "set"
+	val setBrief = (SetCommand + " <setting-expression>", "Evaluates the given Setting and applies to the current project.")
+	val setDetailed =
+SetCommand + """ <setting-expression>
+
+	Applies the given setting to the current project:
+	  1) Constructs the expression provided as an argument by compiling and loading it.
+	  2) Appends the new setting to the current project's settings.
+	  3) Re-evaluates the build's settings.
+
+	This command does not rebuild the build definitions, plugins, or configurations.
+	It does not automatically persist the setting.
+	This is done by running 'settings save' or 'settings save-all'.
+"""
+
+	def SessionCommand = "session"
+	def sessionBrief = (SessionCommand + " ...", "Manipulates session settings.  For details, run 'help " + SessionCommand + "'..")
+	
+	/** The command name to terminate the program.*/
+	val TerminateAction: String = Exit
 
 	def continuousBriefHelp = (ContinuousExecutePrefix + " <action>", "Executes the specified command whenever source files change.")
 
@@ -63,12 +130,12 @@ ProjectCommand +
 	For example, 'project ....' is equivalent to three consecutive 'project ..' commands.
 """
 
-	def projectsBrief = (ProjectsCommand, projectsDetailed)
+	def projectsBrief = projectsDetailed
 	def projectsDetailed = "Displays the names of available projects."
 
 	def historyHelp = HistoryCommands.descriptions.map( d => Help(d) )
 
-	def exitBrief = (TerminateActions.mkString(", "), "Terminates the build.")
+	def exitBrief = (TerminateAction, "Terminates the build.")
 
 	def sbtrc = ".sbtrc"
 
@@ -92,12 +159,16 @@ ProjectCommand +
 	def DefaultsBrief = (DefaultsCommand, DefaultsDetailed)
 	def DefaultsDetailed = "Registers default built-in commands"
 
-	def ReloadCommand = "reload"
-	def ReloadBrief = (ReloadCommand, "Reloads the session and then executes the remaining commands.")
-	def ReloadDetailed =
-ReloadCommand + """
-	This command is equivalent to exiting, restarting, and running the
+	def RebootCommand = "reboot"
+	def RebootSummary = RebootCommand + " [full]"
+	def RebootBrief = (RebootSummary, "Reboots sbt and then executes the remaining commands.")
+	def RebootDetailed =
+RebootSummary + """
+	This command is equivalent to exiting sbt, restarting, and running the
 	 remaining commands with the exception that the jvm is not shut down.
+	If 'full' is specified, the `project/boot` directory is deleted before
+	 restarting.  This forces an update of sbt and Scala and is useful when
+	 working with development versions of sbt or Scala.
 """
 
 	def Multi = ";"
@@ -173,21 +244,25 @@ CompileSyntax + """
 	Cached information about the compilation will be written to 'cache'.
 """
 
-	val FailureWall = "--"
+	val FailureWall = "---"
 	
 	def Load = "load"
 	def LoadLabel = "a project"
 	def LoadCommand = "load-commands"
 	def LoadCommandLabel = "commands"
 
-	def LoadProject = "loadp"
+	def LoadFailed = "load-failed"
+
+	def LoadProjectImpl = "loadp"
+	def LoadProject = "reload"
 	def LoadProjectBrief = (LoadProject, LoadProjectDetailed)
 	def LoadProjectDetailed = "Loads the project in the current directory"
 
 	def Shell = "shell"
-	def ShellBrief = (Shell, ShellDetailed)
+	def ShellBrief = ShellDetailed
 	def ShellDetailed = "Provides an interactive prompt from which commands can be run."
 
+	def ClearOnFailure = "--"
 	def OnFailure = "-"
 	def OnFailureBrief = (OnFailure + " command", "Registers 'command' to run if a command fails.")
 	def OnFailureDetailed =

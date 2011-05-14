@@ -11,9 +11,9 @@ import org.apache.ivy.util.url.CredentialsStore
 
 final case class ModuleID(organization: String, name: String, revision: String, configurations: Option[String] = None, isChanging: Boolean = false, isTransitive: Boolean = true, explicitArtifacts: Seq[Artifact] = Nil, extraAttributes: Map[String,String] = Map.empty, crossVersion: Boolean = false)
 {
-	override def toString = organization + ":" + name + ":" + revision
-	// () required for chaining
+	override def toString = organization + ":" + name + ":" + revision + (configurations match { case Some(s) => ":" + s; case None => "" })
 	def cross(v: Boolean) = copy(crossVersion = v)
+	// () required for chaining
 	def notTransitive() = intransitive()
 	def intransitive() = copy(isTransitive = false)
 	def changing() = copy(isChanging = true)
@@ -55,6 +55,8 @@ final class Patterns(val ivyPatterns: Seq[String], val artifactPatterns: Seq[Str
 }
 object Patterns
 {
+	implicit def defaultPatterns: Patterns = Resolver.defaultPatterns
+
 	def apply(artifactPatterns: String*): Patterns = Patterns(true, artifactPatterns : _*)
 	def apply(isMavenCompatible: Boolean, artifactPatterns: String*): Patterns = Patterns(Nil, artifactPatterns, isMavenCompatible)
 	def apply(ivyPatterns: Seq[String], artifactPatterns: Seq[String], isMavenCompatible: Boolean): Patterns = new Patterns(ivyPatterns, artifactPatterns, isMavenCompatible)
@@ -174,7 +176,7 @@ object Resolver
 	* If `scalaTools` is true, add the Scala Tools releases repository.
 	* If `mavenCentral` is true, add the Maven Central repository.  */
 	def withDefaultResolvers(userResolvers: Seq[Resolver], mavenCentral: Boolean, scalaTools: Boolean): Seq[Resolver] =
-		Seq(Resolver.defaultLocal(None)) ++
+		Seq(Resolver.defaultLocal) ++
 		userResolvers ++
 		single(DefaultMavenRepository, mavenCentral)++
 		single(ScalaToolsReleases, scalaTools)
@@ -270,14 +272,13 @@ object Resolver
 	def mavenStyleBasePattern = "[organisation]/[module]/[revision]/[artifact]-[revision](-[classifier]).[ext]"
 	def localBasePattern = "[organisation]/[module]/[revision]/[type]s/[artifact](-[classifier]).[ext]"
 
-	def userRoot = System.getProperty("user.home")
-	def userMavenRoot = userRoot + "/.m2/repository/"
-	def userIvyRoot = userRoot + "/.ivy2/"
-	private def userIvyRootFile = new File(userIvyRoot)
-
-	def defaultLocal(ivyHome: Option[File]) = defaultUserFileRepository(ivyHome, "local")
-	def defaultShared(ivyHome: Option[File]) = defaultUserFileRepository(ivyHome, "shared")
-	def defaultUserFileRepository(ivyHome: Option[File], id: String) = file(id, new File(ivyHome.getOrElse(userIvyRootFile), id))(defaultIvyPatterns)
+	def defaultLocal = defaultUserFileRepository("local")
+	def defaultShared = defaultUserFileRepository("shared")
+	def defaultUserFileRepository(id: String) =
+	{
+		val pList = ("${ivy.home}/" + id + "/" + localBasePattern) :: Nil
+		FileRepository(id, defaultFileConfiguration, Patterns(pList, pList, false))
+	}
 	def defaultIvyPatterns =
 	{
 		val pList = List(localBasePattern)
@@ -288,15 +289,34 @@ object Resolver
 object Configurations
 {
 	def config(name: String) = new Configuration(name)
-	def defaultMavenConfigurations = Compile :: Runtime :: Test :: Provided :: System :: Optional :: Sources :: Javadoc :: Nil
+	def default: Seq[Configuration] = defaultMavenConfigurations
+	def defaultMavenConfigurations: Seq[Configuration] = Compile :: Runtime :: Test :: Provided :: Optional :: Nil
+	def defaultInternal: Seq[Configuration] = CompileInternal :: RuntimeInternal :: TestInternal :: Nil
+
+	lazy val RuntimeInternal = optionalInternal(Runtime)
+	lazy val TestInternal = fullInternal(Test)
+	lazy val IntegrationTestInternal = fullInternal(IntegrationTest)
+	lazy val CompileInternal = fullInternal(Compile)
+
+	def internalMap(c: Configuration) = c match {
+		case Compile => CompileInternal
+		case Test => TestInternal
+		case Runtime => RuntimeInternal
+		case IntegrationTest => IntegrationTestInternal
+		case _ => c
+	}
+
+	def internal(base: Configuration, ext: Configuration*) = config(base.name + "-internal") extend(ext : _*) hide;
+	def fullInternal(base: Configuration): Configuration  =  internal(base, base, Optional, Provided)
+	def optionalInternal(base: Configuration): Configuration  =  internal(base, base, Optional)
 
 	lazy val Default = config("default")
 	lazy val Compile = config("compile")
-	lazy val IntegrationTest = config("it") extend(Runtime) hide;
+	lazy val IntegrationTest = config("it") extend(Runtime);
 	lazy val Provided = config("provided")
 	lazy val Javadoc = config("javadoc")
 	lazy val Runtime = config("runtime") extend(Compile)
-	lazy val Test = config("test") extend(Runtime) hide;
+	lazy val Test = config("test") extend(Runtime);
 	lazy val Sources = config("sources")
 	lazy val System = config("system")
 	lazy val Optional = config("optional")
@@ -355,8 +375,16 @@ object Artifact
 		val name = file.getName
 		val i = name.lastIndexOf('.')
 		val base = if(i >= 0) name.substring(0, i) else name
-		Artifact(name, extract(name, defaultType), extract(name, defaultExtension), None, Nil, Some(file.toURI.toURL))
+		Artifact(base, extract(name, defaultType), extract(name, defaultExtension), None, Nil, Some(file.toURI.toURL))
 	}
+	def artifactName(scalaVersion: String, module: ModuleID, artifact: Artifact): String =
+	{
+			import artifact._
+		val classifierStr = classifier match { case None => ""; case Some(c) => "-" + c }
+		val base = if(module.crossVersion) IvySbt.crossName(artifact.name, scalaVersion) else artifact.name
+		base + "-" + module.revision + classifierStr + "." + artifact.extension
+	}
+	def cross(enable: Boolean, scalaVersion: String): String = if(enable) "_" + scalaVersion else ""
 }
 final case class ModuleConfiguration(organization: String, name: String, revision: String, resolver: Resolver)
 object ModuleConfiguration

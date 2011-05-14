@@ -6,20 +6,38 @@ package sbt
 	import java.io.PrintWriter
 	import LogManager._
 	import std.Transform
+	import Project.ScopedKey
+	import Keys.{logLevel, logManager, persistLogLevel, persistTraceLevel, traceLevel}
 
 object LogManager
 {
-	def construct(context: Transform.Context[Project]) = (task: Task[_], to: PrintWriter) =>
+	def construct(data: Settings[Scope]) = (task: ScopedKey[_], to: PrintWriter) =>
 	{
-		val owner = context owner task
-		val ownerName = owner flatMap ( context ownerName _ ) getOrElse ""
-		val taskPath = (context staticName task).toList ::: ownerName  :: Nil
-		def level(key: AttributeKey[Level.Value], default: Level.Value): Level.Value = default//settings.get(key, taskPath) getOrElse default
-		val screenLevel = level(ScreenLogLevel, Level.Info)
-		val backingLevel = level(PersistLogLevel, Level.Debug)
+		val manager = logManager in task.scope get data getOrElse default
+		manager(data, task, to)
+	}
+	lazy val default: LogManager = withLoggers()
 
-		val console = ConsoleLogger()
-		val backed = ConsoleLogger(ConsoleLogger.printWriterOut(to), useColor = false) // TODO: wrap this with a filter that strips ANSI codes
+	def defaultScreen: AbstractLogger = ConsoleLogger()
+	def defaultBacked(useColor: Boolean): PrintWriter => AbstractLogger =
+		to => ConsoleLogger(ConsoleLogger.printWriterOut(to), useColor = useColor) // TODO: should probably filter ANSI codes when useColor=false
+
+	def withScreenLogger(mk: => AbstractLogger): LogManager = withLoggers(mk)
+	
+	def withLoggers(screen: => AbstractLogger = defaultScreen, backed: PrintWriter => AbstractLogger = defaultBacked(true)): LogManager =
+		new LogManager {
+			def apply(data: Settings[Scope], task: ScopedKey[_], to: PrintWriter): Logger =
+				defaultLogger(data, task, screen, backed(to))
+		}
+
+	def defaultLogger(data: Settings[Scope], task: ScopedKey[_], console: AbstractLogger, backed: AbstractLogger): Logger =
+	{
+		val scope = task.scope
+		def getOr[T](key: AttributeKey[T], default: T): T = data.get(scope, key) getOrElse default
+		val screenLevel = getOr(logLevel.key, Level.Info)
+		val backingLevel = getOr(persistLogLevel.key, Level.Debug)
+		val screenTrace = getOr(traceLevel.key, -1)
+		val backingTrace = getOr(persistTraceLevel.key, Int.MaxValue)
 
 		val multi = new MultiLogger(console :: backed :: Nil)
 			// sets multi to the most verbose for clients that inspect the current level
@@ -27,9 +45,12 @@ object LogManager
 			// set the specific levels
 		console setLevel screenLevel
 		backed setLevel backingLevel
+		console setTrace screenTrace
+		backed setTrace backingTrace
 		multi: Logger
 	}
-
-	val ScreenLogLevel = AttributeKey[Level.Value]("screen log level")
-	val PersistLogLevel = AttributeKey[Level.Value]("persist log level")
+}
+trait LogManager
+{
+	def apply(data: Settings[Scope], task: ScopedKey[_], writer: PrintWriter): Logger
 }

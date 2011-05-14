@@ -3,19 +3,135 @@
  */
 package sbt
 
-import Execute.NodeView
-import Completions.noCompletions
+	import java.io.File
+	import complete.{DefaultParsers, EditDistance, Parser}
+	import CommandSupport.logger
 
-trait Command
-{
-	def applies: State => Option[Apply]
-}
-trait Apply
-{
+sealed trait Command {
 	def help: Seq[Help]
-	def run: Input => Option[State]
-	def complete: Input => Completions
+	def parser: State => Parser[() => State]
+	def tags: AttributeMap
+	def tag[T](key: AttributeKey[T], value: T): Command
 }
+private[sbt] final class SimpleCommand(val name: String, val help: Seq[Help], val parser: State => Parser[() => State], val tags: AttributeMap) extends Command {
+	assert(Command validID name, "'" + name + "' is not a valid command name." )
+	def tag[T](key: AttributeKey[T], value: T): SimpleCommand = new SimpleCommand(name, help, parser, tags.put(key, value))
+}
+private[sbt] final class ArbitraryCommand(val parser: State => Parser[() => State], val help: Seq[Help], val tags: AttributeMap) extends Command
+{
+	def tag[T](key: AttributeKey[T], value: T): ArbitraryCommand = new ArbitraryCommand(parser, help, tags.put(key, value))
+}
+
+object Command
+{
+	def pointerSpace(s: String, i: Int): String  =	(s take i) map { case '\t' => '\t'; case _ => ' ' } mkString;
+	
+		import DefaultParsers._
+
+	def command(name: String)(f: State => State): Command  =  command(name, Nil)(f)
+	def command(name: String, briefHelp: String, detail: String)(f: State => State): Command  =  command(name, Help(name, (name, briefHelp), detail) :: Nil)(f)
+	def command(name: String, help: Seq[Help])(f: State => State): Command  =  make(name, help : _*)(state => success(() => f(state)))
+
+	def make(name: String, briefHelp: (String, String), detail: String)(parser: State => Parser[() => State]): Command =
+		make(name, Help(name, briefHelp, detail) )(parser)
+	def make(name: String, help: Help*)(parser: State => Parser[() => State]): Command  =  new SimpleCommand(name, help, parser, AttributeMap.empty)
+
+	def apply[T](name: String, briefHelp: (String, String), detail: String)(parser: State => Parser[T])(effect: (State,T) => State): Command =
+		apply(name, Help(name, briefHelp, detail) )(parser)(effect)
+	def apply[T](name: String, help: Help*)(parser: State => Parser[T])(effect: (State,T) => State): Command  =
+		make(name, help : _* )(applyEffect(parser)(effect) )
+
+	def args(name: String, briefHelp: (String, String), detail: String, display: String)(f: (State, Seq[String]) => State): Command =
+		args(name, display, Help(name, briefHelp, detail) )(f)
+	
+	def args(name: String, display: String, help: Help*)(f: (State, Seq[String]) => State): Command =
+		make(name, help : _*)( state => spaceDelimited(display) map apply1(f, state) )
+
+	def single(name: String, briefHelp: (String, String), detail: String)(f: (State, String) => State): Command =
+		single(name, Help(name, briefHelp, detail) )(f)
+	def single(name: String, help: Help*)(f: (State, String) => State): Command =
+		make(name, help : _*)( state => token(trimmed(any.+.string) map apply1(f, state)) )
+	
+	def custom(parser: State => Parser[() => State], help: Seq[Help] = Nil): Command  =  new ArbitraryCommand(parser, help, AttributeMap.empty)
+	def arb[T](parser: State => Parser[T], help: Help*)(effect: (State, T) => State): Command  =  custom(applyEffect(parser)(effect), help)
+
+	def validID(name: String) = DefaultParsers.matches(OpOrID, name)
+
+	def applyEffect[T](parser: State => Parser[T])(effect: (State, T) => State): State => Parser[() => State] =
+		s => applyEffect(parser(s))(t => effect(s,t))
+	def applyEffect[T](p: Parser[T])(f: T => State): Parser[() => State] =
+		p map { t => () => f(t) }
+
+	def combine(cmds: Seq[Command]): State => Parser[() => State] =
+	{
+		val (simple, arbs) = separateCommands(cmds)
+		state => (simpleParser(simple)(state) /: arbs.map(_ parser state) ){ _ | _ }
+	}
+	private[this] def separateCommands(cmds: Seq[Command]): (Seq[SimpleCommand], Seq[ArbitraryCommand]) =
+		Collections.separate(cmds){ case s: SimpleCommand => Left(s); case a: ArbitraryCommand => Right(a) }
+	private[this] def apply1[A,B,C](f: (A,B) => C, a: A): B => () => C =
+		b => () => f(a,b)
+
+	def simpleParser(cmds: Seq[SimpleCommand]): State => Parser[() => State] =
+		simpleParser(cmds.map(sc => (sc.name, sc.parser)).toMap )
+
+	def simpleParser(commandMap: Map[String, State => Parser[() => State]]): State => Parser[() => State] =
+		(state: State) => token(OpOrID examples commandMap.keys.toSet) flatMap { id =>
+			(commandMap get id) match {
+				case None => failure(invalidValue("command", commandMap.keys)(id))
+				case Some(c) => c(state)
+			}
+		}
+		
+	def process(command: String, state: State): State =
+	{
+		val parser = combine(state.definedCommands)
+		Parser.result(parser(state), command) match
+		{
+			case Right(s) => s() // apply command.  command side effects happen here
+			case Left((msgs,pos)) =>
+				val errMsg = commandError(command, msgs, pos)
+				logger(state).error(errMsg)
+				state.fail				
+		}
+	}
+	def commandError(command: String, msgs: Seq[String], index: Int): String =
+	{
+		val (line, modIndex) = extractLine(command, index)
+		val point = pointerSpace(command, modIndex)
+		msgs.mkString("\n") + "\n" + line + "\n" + point + "^"
+	}
+	def extractLine(s: String, i: Int): (String, Int) =
+	{
+		val notNewline = (c: Char) => c != '\n' && c != '\r'
+		val left = takeRightWhile( s.substring(0, i) )( notNewline )
+		val right = s substring i takeWhile notNewline
+		(left + right, left.length)
+	}
+	def takeRightWhile(s: String)(pred: Char => Boolean): String =
+	{
+		def loop(i: Int): String =
+			if(i < 0)
+				s
+			else if( pred(s(i)) )
+				loop(i-1)
+			else
+				s.substring(i+1)
+		loop(s.length - 1)
+	}
+	def invalidValue(label: String, allowed: Iterable[String])(value: String): String =
+		"Not a valid " + label + ": " + value + similar(value, allowed)
+	def similar(value: String, allowed: Iterable[String]): String =
+	{
+		val suggested = suggestions(value, allowed.toSeq)
+		if(suggested.isEmpty) "" else suggested.mkString(" (similar: ", ", ", ")")
+	}
+	def suggestions(a: String, bs: Seq[String], maxDistance: Int = 3, maxSuggestions: Int = 3): Seq[String] =
+		bs.map { b => (b, distance(a, b) ) } filter (_._2 <= maxDistance) sortBy(_._2) take(maxSuggestions) map(_._1)
+	def distance(a: String, b: String): Int =
+		EditDistance.levenshtein(a, b, insertCost = 1, deleteCost = 1, subCost = 2, transposeCost = 1, matchCost = -1, true)
+}
+
 trait Help
 {
 	def detail: (Set[String], String)
@@ -23,102 +139,10 @@ trait Help
 }
 object Help
 {
-	def apply(briefHelp: (String, String), detailedHelp: (Set[String], String) = (Set.empty, "") ): Help = new Help { def detail = detailedHelp; def brief = briefHelp }
-}
-trait Completions
-{
-	def candidates: Seq[String]
-	def position: Int
-}
-object Completions
-{
-	implicit def seqToCompletions(s: Seq[String]): Completions = apply(s : _*)
-	def apply(s: String*): Completions = new Completions { def candidates = s; def position = 0 }
+	def apply(name: String, briefHelp: (String, String), detail: String): Help  =  apply(briefHelp, (Set(name), detail))
 
-	def noCompletions: PartialFunction[Input, Completions] = { case _ => Completions() }
-}
-object Command
-{
-	def univ(f: State => Apply): Command = direct(s => Some(f(s)))
-	def direct(f: State => Option[Apply]): Command =
-		new Command { def applies = f }
-	def apply(f: PartialFunction[State, Apply]): Command =
-		direct(f.lift)
-
-	def simple(name: String, help: Help*)(f: (Input, State) => State): Command =
-		univ( Apply.simple(name, help : _*)(f) )
-	def simple(name: String, brief: (String, String), detail: String)(f: (Input, State) => State): Command =
-		univ( Apply.simple(name, brief, detail)(f) )
-}
-object Apply
-{
-	def direct(h: Help*)(c: Input => Completions = noCompletions )(r: Input => Option[State]): Apply =
-		new Apply { def help = h; def run = r; def complete = c }
-
-	def apply(h: Help*)(r: PartialFunction[Input, State]): Apply =
-		direct(h : _*)( noCompletions )(r.lift)
-	/* Currently problematic for apply( Seq(..): _*)() (...)
-	* TODO: report bug and uncomment when fixed
-	def apply(h: Help*)(complete: PartialFunction[Input, Completions] = noCompletions )(r: PartialFunction[Input, State]): Apply =
-		direct(h : _*)( complete orElse noCompletions )(r.lift)*/
-
-	def simple(name: String, brief: (String, String), detail: String)(f: (Input, State) => State): State => Apply =
-	{
-		val h = Help(brief, (Set(name), detail) )
-		simple(name, h)(f)
-	}
-	def simple(name: String, help: Help*)(f: (Input, State) => State): State => Apply =
-		s => Apply( help: _* ){ case in if name == in.name => f( in, s) }
-}
-
-trait Logged
-{
-	def log: Logger
-}
-trait HistoryEnabled
-{
-	def historyPath: Option[Path]
-}
-trait Named
-{
-	def name: String
-}
-
-trait Navigation[Project]
-{
-	def parentProject: Option[Project]
-	def self: Project
-	def initialProject(s: State): Project
-	def projectClosure(s: State): Seq[Project]
-	def rootProject: Project
-}
-trait Member[Node <: Member[Node]]
-{
-	def navigation: Navigation[Node]
-}
-trait Tasked
-{
-	type Task[T] <: AnyRef
-	def act(in: Input, state: State): Option[(Task[State], NodeView[Task])]
-	def help: Seq[Help]
-}
-trait TaskSetup
-{
-	def maxThreads = Runtime.getRuntime.availableProcessors
-	def checkCycles = false
-}
-final case class Input(line: String, cursor: Option[Int])
-{
-	lazy val (name, arguments) = line match { case Input.NameRegex(n, a) => (n, a); case _ => (line, "") }
-	lazy val splitArgs: Seq[String] = if(arguments.isEmpty) Nil else (arguments split """\s+""").toSeq
-}
-object Input
-{
-	val NameRegex = """\s*(\p{Punct}+|[\w-]+)\s*(.*)""".r
-}
-
-object Next extends Enumeration {
-	val Reload, Fail, Done, Continue = Value
+	def apply(briefHelp: (String, String), detailedHelp: (Set[String], String) = (Set.empty, "") ): Help =
+		new Help { def detail = detailedHelp; def brief = briefHelp }
 }
 trait CommandDefinitions
 {

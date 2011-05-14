@@ -1,5 +1,5 @@
 /* sbt -- Simple Build Tool
- * Copyright 2008, 2009, 2010  Mark Harrah
+ * Copyright 2008, 2009, 2010, 2011  Mark Harrah
  */
 package xsbt.boot
 
@@ -46,12 +46,22 @@ object Launch
 	def run(launcher: xsbti.Launcher)(config: RunConfiguration): xsbti.MainResult =
 	{
 		import config._
-		val scalaProvider: xsbti.ScalaProvider = launcher.getScala(scalaVersion)
+		val scalaProvider: xsbti.ScalaProvider = launcher.getScala(scalaVersion, "(for " + app.name + ")")
 		val appProvider: xsbti.AppProvider = scalaProvider.app(app)
 		val appConfig: xsbti.AppConfiguration = new AppConfiguration(toArray(arguments), workingDirectory, appProvider)
 
 		val main = appProvider.newMain()
-		main.run(appConfig)
+		try { main.run(appConfig) }
+		catch { case e: xsbti.FullReload => if(e.clean) delete(launcher.bootDirectory); throw e }
+	}
+	private[this] def delete(f: File)
+	{
+		if(f.isDirectory)
+		{
+			val fs = f.listFiles()
+			if(fs ne null) fs foreach delete
+		}
+		if(f.exists) f.delete()
 	}
 	final def launch(run: RunConfiguration => xsbti.MainResult)(config: RunConfiguration)
 	{
@@ -63,32 +73,48 @@ object Launch
 		}
 	}
 }
-final class RunConfiguration(val scalaVersion: String, val app: xsbti.ApplicationID, val workingDirectory: File, val arguments: List[String]) extends NotNull
+final class RunConfiguration(val scalaVersion: String, val app: xsbti.ApplicationID, val workingDirectory: File, val arguments: List[String])
 
 import BootConfiguration.{appDirectoryName, baseDirectoryName, ScalaDirectoryName, TestLoadScalaClasses}
 class Launch private[xsbt](val bootDirectory: File, val ivyOptions: IvyOptions) extends xsbti.Launcher
 {
-	import ivyOptions.{cacheDirectory, classifiers, repositories}
+	import ivyOptions.{classifiers, repositories}
 	bootDirectory.mkdirs
-	private val scalaProviders = new Cache[String, ScalaProvider](new ScalaProvider(_))
-	def getScala(version: String): xsbti.ScalaProvider = scalaProviders(version)
+	private val scalaProviders = new Cache[String, String, ScalaProvider](new ScalaProvider(_, _))
+	def getScala(version: String): xsbti.ScalaProvider = getScala(version, "")
+	def getScala(version: String, reason: String): xsbti.ScalaProvider = scalaProviders(version, reason)
 
-	lazy val topLoader = new BootFilteredLoader(getClass.getClassLoader)
+	lazy val topLoader = (new JNAProvider).loader
 	val updateLockFile = new File(bootDirectory, "sbt.boot.lock")
 
 	def globalLock: xsbti.GlobalLock = Locks
+	def ivyHome = ivyOptions.ivyHome.orNull
 
-	class ScalaProvider(val version: String) extends xsbti.ScalaProvider with Provider
+	class JNAProvider extends Provider
+	{
+		lazy val id = new Application("net.java.dev.jna", "jna", new Explicit("3.2.3"), "", Nil, false, array())
+		lazy val configuration = new UpdateConfiguration(bootDirectory, ivyOptions.ivyHome, "", repositories)
+		lazy val libDirectory = new File(bootDirectory, baseDirectoryName(""))
+		def baseDirectories: List[File] = new File(libDirectory, appDirectoryName(id.toID, File.separator)) :: Nil
+		def testLoadClasses: List[String] = "com.sun.jna.Function" :: Nil
+		def extraClasspath = array()
+		def target = new UpdateApp(id, Nil)
+		lazy val parentLoader = new BootFilteredLoader(getClass.getClassLoader)
+		def failLabel = "JNA"
+		def lockFile = updateLockFile
+	}
+
+	class ScalaProvider(val version: String, override val reason: String) extends xsbti.ScalaProvider with Provider
 	{
 		def launcher: xsbti.Launcher = Launch.this
 		def parentLoader = topLoader
 
-		lazy val configuration = new UpdateConfiguration(bootDirectory, cacheDirectory, version, repositories)
+		lazy val configuration = new UpdateConfiguration(bootDirectory, ivyOptions.ivyHome, version, repositories)
 		lazy val libDirectory = new File(configuration.bootDirectory, baseDirectoryName(version))
 		lazy val scalaHome = new File(libDirectory, ScalaDirectoryName)
-		def compilerJar = new File(scalaHome,CompilerModuleName + ".jar")
+		def compilerJar = new File(scalaHome, CompilerModuleName + ".jar")
 		def libraryJar = new File(scalaHome, LibraryModuleName + ".jar")
-		override def classpath = array(compilerJar, libraryJar)
+		override def classpath = Provider.getJars(scalaHome :: Nil)
 		def baseDirectories = List(scalaHome)
 		def testLoadClasses = TestLoadScalaClasses
 		def target = new UpdateScala(Value.get(classifiers.forScala))

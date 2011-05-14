@@ -6,7 +6,7 @@ package sbt
 import Using._
 import ErrorHandling.translate
 
-import java.io.{BufferedReader, ByteArrayOutputStream, BufferedWriter, File, FileInputStream, InputStream, OutputStream}
+import java.io.{BufferedReader, ByteArrayOutputStream, BufferedWriter, File, FileInputStream, InputStream, OutputStream, PrintWriter}
 import java.net.{URI, URISyntaxException, URL}
 import java.nio.charset.Charset
 import java.util.Properties
@@ -309,7 +309,8 @@ object IO
 	private def writeZip(sources: Seq[(File,String)], output: ZipOutputStream)(createEntry: String => ZipEntry)
 	{
 			import Path.{lazyPathFinder => pf}
-		val files = sources.collect { case (file,name) if file.isFile => (file, normalizeName(name)) }
+		val files = sources.flatMap { case (file,name) => if (file.isFile) (file, normalizeName(name)) :: Nil else Nil }
+
 		val now = System.currentTimeMillis
 		// The CRC32 for an empty value, needed to store directories in zip files
 		val emptyCRC = new CRC32().getValue()
@@ -396,7 +397,6 @@ object IO
 					case None => (new ZipOutputStream(fileOut), "zip")
 				}
 			try { f(zipOut) }
-			catch { case e: Exception => "Error writing " + ext + ": " + e.toString }
 			finally { zipOut.close }
 		}
 	}
@@ -508,12 +508,12 @@ object IO
 	private def writeBytes(file: File, bytes: Array[Byte], append: Boolean): Unit =
 		fileOutputStream(append)(file) { _.write(bytes) }
 
+	def readLinesURL(url: URL, charset: Charset = defaultCharset): List[String] =
+		urlReader(charset)(url)(readLines)
 
-	// Not optimized for large files
 	def readLines(file: File, charset: Charset = defaultCharset): List[String] =
 		fileReader(charset)(file)(readLines)
 		
-	// Not optimized for large files
 	def readLines(in: BufferedReader): List[String] = 
 		foldLines[List[String]](in, Nil)( (accum, line) => line :: accum ).reverse
 	
@@ -534,6 +534,8 @@ object IO
 		writer(file, lines.headOption.getOrElse(""), charset, append) { w =>
 			lines.foreach { line => w.write(line); w.newLine() }
 		}
+	def writeLines(writer: PrintWriter, lines: Seq[String]): Unit =
+		lines foreach writer.println
 		
 	def write(properties: Properties, label: String, to: File) =
 		fileOutputStream()(to) { output => properties.store(output, label) }
@@ -572,6 +574,7 @@ object IO
 	{
 		if(b.exists)
 			delete(b)
+		createDirectory(b.getParentFile)
 		if(!a.renameTo(b))
 		{
 			copyFile(a, b, true)
@@ -588,4 +591,37 @@ object IO
 		Using.fileInputStream(file) { fin =>
 		Using.gzipInputStream(fin) { ing =>
 		Using.bufferedInputStream(ing)(f) }}
+	
+	/** Converts an absolute File to a URI.  The File is converted to a URI (toURI),
+	* normalized (normalize), encoded (toASCIIString), and a forward slash ('/') is appended to the path component if
+	* it does not already end with a slash.
+	*/
+	def directoryURI(dir: File): URI  =
+	{
+		assertAbsolute(dir)
+		directoryURI(dir.toURI.normalize)
+	}
+
+	/** Converts an absolute File to a URI.  The File is converted to a URI (toURI),
+	* normalized (normalize), encoded (toASCIIString), and a forward slash ('/') is appended to the path component if
+	* it does not already end with a slash.
+	*/
+	def directoryURI(uri: URI): URI =
+	{
+		assertAbsolute(uri)
+		val str = uri.toASCIIString
+		val dirStr = if(str.endsWith("/") || uri.getScheme != "file") str else str + "/"
+		(new URI(dirStr)).normalize
+	}
+	/** Converts the given File to a URI.  If the File is relative, the URI is relative, unlike File.toURI*/
+	def toURI(f: File): URI  =  if(f.isAbsolute) f.toURI else new URI(f.getPath)
+	def resolve(base: File, f: File): File  =
+	{
+		assertAbsolute(base)
+		val fabs = if(f.isAbsolute) f else new File(directoryURI(new File(base, f.getPath)))
+		assertAbsolute(fabs)
+		fabs
+	}
+	def assertAbsolute(f: File) = assert(f.isAbsolute, "Not absolute: " + f)
+	def assertAbsolute(uri: URI) = assert(uri.isAbsolute, "Not absolute: " + uri)
 }

@@ -3,7 +3,7 @@
  */
 package sbt
 
-import java.io.{File,IOException}
+import java.io.File
 import CacheIO.{fromFile, toFile}
 import sbinary.{Format, JavaIO}
 import scala.reflect.Manifest
@@ -30,6 +30,14 @@ object Tracked
 		Difference.outputs(cache, style)
 
 		import sbinary.JavaIO._
+
+	def lastOutput[I,O](cacheFile: File)(f: (I,Option[O]) => O)(implicit o: Format[O], mf: Manifest[Format[O]]): I => O = in =>
+	{
+		val previous: Option[O] = fromFile[O](cacheFile)
+		val next = f(in, previous)
+		toFile(next)(cacheFile)
+		next
+	}
 
 	def inputChanged[I,O](cacheFile: File)(f: (Boolean, I) => O)(implicit ic: InputCache[I]): I => O = in =>
 	{
@@ -112,7 +120,7 @@ class Changed[O](val cacheFile: File)(implicit equiv: Equiv[O], format: Format[O
 				stream => equiv.equiv(value, format.reads(stream))
 			}
 		} catch {
-			case _: IOException => false
+			case _: Exception => false
 		}
 }
 object Difference

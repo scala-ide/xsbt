@@ -1,5 +1,5 @@
 /* sbt -- Simple Build Tool
- * Copyright 2009, 2010 Mark Harrah
+ * Copyright 2009, 2010, 2011 Mark Harrah
  */
 package xsbt.api
 
@@ -89,7 +89,7 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 {
 	import SameAPI._
 
-	private val pending = new mutable.HashSet[(Structure, Structure)]
+	private val pending = new mutable.HashSet[AnyRef]
 	private[this] val debugEnabled = java.lang.Boolean.getBoolean("xsbt.api.debug")
 	def debug(flag: Boolean, msg: => String): Boolean =
 	{
@@ -119,7 +119,8 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 		debug(sameDefinitions(byName(atypes), byName(btypes)), "Type definitions differed")
 	}
 	def sameDefinitions(a: scala.collection.Map[String, List[Definition]], b: scala.collection.Map[String, List[Definition]]): Boolean =
-		debug(sameStrings(a.keySet, b.keySet), "\tDefinition strings differed") && zippedEntries(a,b).forall(tupled(sameNamedDefinitions))
+		debug(sameStrings(a.keySet, b.keySet), "\tDefinition strings differed (a: " + (a.keySet -- b.keySet) + ", b: " + (b.keySet -- a.keySet) + ")") &&
+		zippedEntries(a,b).forall(tupled(sameNamedDefinitions))
 
 	/** Removes definitions that should not be considered for API equality.
 	* All top-level definitions are always considered: 'private' only means package-private.
@@ -160,11 +161,15 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 
 	/** Checks that the two definitions are the same, other than their name.*/
 	def sameDefinitionContent(a: Definition, b: Definition): Boolean =
+		samePending(a,b)(sameDefinitionContentDirect)
+	def sameDefinitionContentDirect(a: Definition, b: Definition): Boolean =
+	{
 		//a.name == b.name &&
 		debug(sameAccess(a.access, b.access), "Access differed") &&
 		debug(sameModifiers(a.modifiers, b.modifiers), "Modifiers differed") &&
 		debug(sameAnnotations(a.annotations, b.annotations), "Annotations differed") &&
 		debug(sameDefinitionSpecificAPI(a, b), "Definition-specific differed")
+	}
 
 	def sameAccess(a: Access, b: Access): Boolean =
 		(a, b) match
@@ -300,16 +305,22 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 	}
 
 	def sameType(a: Type, b: Type): Boolean =
+		samePending(a,b)(sameTypeDirect)
+	def sameTypeDirect(a: Type, b: Type): Boolean =
 		(a, b) match
 		{
 			case (sa: SimpleType, sb: SimpleType) => debug(sameSimpleType(sa, sb), "Different simple types: " + DefaultShowAPI(sa) + " and " + DefaultShowAPI(sb))
+			case (ca: Constant, cb: Constant) => debug(sameConstantType(ca, cb), "Different constant types: " + DefaultShowAPI(ca) + " and " + DefaultShowAPI(cb))
 			case (aa: Annotated, ab: Annotated) => debug(sameAnnotatedType(aa, ab), "Different annotated types")
 			case (sa: Structure, sb: Structure) => debug(sameStructure(sa, sb), "Different structure type")
 			case (ea: Existential, eb: Existential) => debug(sameExistentialType(ea, eb), "Different existential type")
 			case (pa: Polymorphic, pb: Polymorphic) => debug(samePolymorphicType(pa, pb), "Different polymorphic type")
-			case _ => false
+			case _ => differentCategory("type", a, b)
 		}
 
+	def sameConstantType(ca: Constant, cb: Constant): Boolean =
+		sameType(ca.baseType, cb.baseType) &&
+		ca.value == cb.value
 	def sameExistentialType(a: Existential, b: Existential): Boolean =
 		sameTypeParameters(a.clause, b.clause) &&
 		sameType(a.baseType, b.baseType)
@@ -320,11 +331,10 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 		sameSimpleType(a.baseType, b.baseType) &&
 		sameAnnotations(a.annotations, b.annotations)
 	def sameStructure(a: Structure, b: Structure): Boolean =
-		if(pending add ((a,b)) )
-			try { sameStructureDirect(a,b) }
-			finally { pending -= ((a,b)) }
-		else
-			true
+		samePending(a,b)(sameStructureDirect)
+	private[this] def samePending[T](a: T, b: T)(f: (T,T) => Boolean): Boolean =
+		if(pending add ((a,b)) ) f(a,b) else true
+
 	def sameStructureDirect(a: Structure, b: Structure): Boolean =
 		sameSeq(a.parents, b.parents)(sameType) &&
 		sameMembers(a.declared, b.declared) &&
@@ -342,8 +352,10 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 			case (ca: ConstantType, cb: ConstantType) => debug(sameSimpleType(ca.underlying, cb.underlying), "Different constant type")
 			case (_: EmptyType, _: EmptyType) => true
 			case (pa: Parameterized, pb: Parameterized) => debug(sameParameterized(pa, pb), "Different parameterized")
-			case _ => debug(false, "Different category of simple type (" + a.getClass.getName + " and " + b.getClass.getName + ") for (" + a + " and " + b + ")")
+			case _ => differentCategory("simple type", a, b)
 		}
+	def differentCategory(label: String, a: AnyRef, b: AnyRef): Boolean =
+		debug(false, "Different category of " + label + " (" + a.getClass.getName + " and " + b.getClass.getName + ") for (" + a + " and " + b + ")")
 
 	def sameParameterized(a: Parameterized, b: Parameterized): Boolean =
 		sameSimpleType(a.baseType, b.baseType) &&

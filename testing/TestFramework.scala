@@ -26,7 +26,7 @@ object TestFrameworks
 	val SpecsCompat = new TestFramework("sbt.impl.SpecsFramework")
 }
 
-class TestFramework(val implClassName: String) extends NotNull
+class TestFramework(val implClassName: String)
 {
 	def create(loader: ClassLoader, log: Logger): Option[Framework] =
 	{
@@ -34,9 +34,9 @@ class TestFramework(val implClassName: String) extends NotNull
 		catch { case e: ClassNotFoundException => log.debug("Framework implementation '" + implClassName + "' not present."); None }
 	}
 }
-final class TestDefinition(val name: String, val fingerprint: Fingerprint) extends NotNull
+final class TestDefinition(val name: String, val fingerprint: Fingerprint)
 {
-	override def toString = "Test " + name + " : " + fingerprint
+	override def toString = "Test " + name + " : " + TestFramework.toString(fingerprint)
 	override def equals(t: Any) =
 		t match
 		{
@@ -47,8 +47,14 @@ final class TestDefinition(val name: String, val fingerprint: Fingerprint) exten
 
 final class TestRunner(framework: Framework, loader: ClassLoader, listeners: Seq[TestReportListener], log: Logger)
 {
-	private[this] val delegate = framework.testRunner(loader, listeners.flatMap(_.contentLogger).toArray)
 	private[this] def run(testDefinition: TestDefinition, handler: EventHandler, args: Array[String]): Unit =
+	{
+		val loggers = listeners.flatMap(_.contentLogger(testDefinition))
+		val delegate = framework.testRunner(loader, loggers.map(_.log).toArray)
+		try { delegateRun(delegate, testDefinition, handler, args) }
+		finally { loggers.foreach( _.flush() ) }
+	}
+	private[this] def delegateRun(delegate: Runner, testDefinition: TestDefinition, handler: EventHandler, args: Array[String]): Unit =
 		(testDefinition.fingerprint, delegate) match
 		{
 			case (simple: TestFingerprint, _) => delegate.run(testDefinition.name, simple, handler, args)
@@ -114,6 +120,13 @@ object TestFramework
 			case (a: SubclassFingerprint, b: SubclassFingerprint) => a.isModule == b.isModule && a.superClassName == b.superClassName
 			case (a: AnnotatedFingerprint, b: AnnotatedFingerprint) => a.isModule == b.isModule && a.annotationName == b.annotationName
 			case _ => false
+		}
+	def toString(f: Fingerprint): String =
+		f match
+		{
+			case sf: SubclassFingerprint => "subclass(" + sf.isModule + ", " + sf.superClassName + ")"
+			case af: AnnotatedFingerprint => "annotation(" + af.isModule + ", " + af.annotationName + ")"
+			case _ => f.toString
 		}
 
 	def testTasks(frameworks: Seq[Framework],
@@ -181,7 +194,8 @@ object TestFramework
 	}
 	def createTestLoader(classpath: Seq[File], scalaInstance: ScalaInstance): ClassLoader =
 	{
-		val filterCompilerLoader = new FilteredLoader(scalaInstance.loader, ScalaCompilerJarPackages)
+		val declaresCompiler = classpath.exists(_.getName contains "scala-compiler")
+		val filterCompilerLoader = if(declaresCompiler) scalaInstance.loader else new FilteredLoader(scalaInstance.loader, ScalaCompilerJarPackages)
 		val interfaceFilter = (name: String) => name.startsWith("org.scalatools.testing.")
 		val notInterfaceFilter = (name: String) => !interfaceFilter(name)
 		val dual = new DualLoader(filterCompilerLoader, notInterfaceFilter, x => true, getClass.getClassLoader, interfaceFilter, x => false)

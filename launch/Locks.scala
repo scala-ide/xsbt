@@ -23,14 +23,18 @@ object GetLocks
 // gets a file lock by first getting a JVM-wide lock.
 object Locks extends xsbti.GlobalLock
 {
-	private[this] val locks = new Cache[File, GlobalLock](new GlobalLock(_))
+	private[this] val locks = new Cache[File, Unit, GlobalLock]( (f, _) => new GlobalLock(f))
 	def apply[T](file: File, action: Callable[T]): T =
-		synchronized
-		{
-			file.getParentFile.mkdirs()
-			file.createNewFile()
-			locks(file.getCanonicalFile).withLock(action)
-		}
+	{
+		val lock =
+			synchronized
+			{
+				file.getParentFile.mkdirs()
+				file.createNewFile()
+				locks(file.getCanonicalFile, ())
+			}
+		lock.withLock(action)
+	}
 
 	private[this] class GlobalLock(file: File)
 	{

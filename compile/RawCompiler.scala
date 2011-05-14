@@ -2,7 +2,7 @@
  * Copyright 2009, 2010  Mark Harrah
  */
 package sbt
-package compile
+package compiler
 
 	import java.io.File
 
@@ -37,5 +37,4 @@ class RawCompiler(val scalaInstance: ScalaInstance, cp: ClasspathOptions, log: L
 class CompileFailed(val arguments: Array[String], override val toString: String) extends xsbti.CompileFailed
 {
 	def problems = Array()
-	override def fillInStackTrace = this
 }

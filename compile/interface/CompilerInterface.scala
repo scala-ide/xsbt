@@ -23,6 +23,7 @@ class CompilerInterface
 		val phasesSet = new scala.collection.mutable.HashSet[Any] // 2.7 compatibility
 		object compiler extends Global(command.settings, reporter)
 		{
+			object dummy // temporary fix for #4426
 			object sbtAnalyzer extends
 			{
 				val global: compiler.type = compiler
@@ -73,6 +74,11 @@ class CompilerInterface
 				meth.invoke(this).asInstanceOf[List[SubComponent]]
 			}
 			trait Compat27 { val runsBefore: List[String] = Nil }
+		}
+		if(command.shouldStopWithInfo)
+		{
+			reporter.info(null, command.getInfoMessage(compiler), true)
+			throw new InterfaceCompileFailed(args, Array(), "Compiler option supplied that disabled actual compilation.")
 		}
 		if(noErrors)
 		{

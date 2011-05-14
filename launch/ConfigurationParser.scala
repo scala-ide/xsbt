@@ -19,7 +19,7 @@ object ConfigurationParser
 	
 	implicit val readIDs = ids _
 }
-class ConfigurationParser extends NotNull
+class ConfigurationParser
 {
 	def apply(file: File): LaunchConfiguration = Using(new InputStreamReader(new FileInputStream(file), "UTF-8"))(apply)
 	def apply(s: String): LaunchConfiguration = Using(new StringReader(s))(apply)
@@ -42,10 +42,10 @@ class ConfigurationParser extends NotNull
 		val (boot, m4) = processSection(m3, "boot", getBoot)
 		val (logging, m5) = processSection(m4, "log", getLogging)
 		val (properties, m6) = processSection(m5, "app-properties", getAppProperties)
-		val (cacheDir, m7) = processSection(m6, "ivy", getIvy)
+		val (ivyHome, m7) = processSection(m6, "ivy", getIvy)
 		check(m7, "section")
 		val classifiers = Classifiers(scalaClassifiers, appClassifiers)
-		new LaunchConfiguration(scalaVersion, IvyOptions(cacheDir, classifiers, repositories), app, boot, logging, properties)
+		new LaunchConfiguration(scalaVersion, IvyOptions(ivyHome, classifiers, repositories), app, boot, logging, properties)
 	}
 	def getScala(m: LabelMap) =
 	{
@@ -75,7 +75,7 @@ class ConfigurationParser extends NotNull
 	def check(map: ListMap[String, _], label: String): Unit = if(map.isEmpty) () else error(map.keys.mkString("Invalid " + label + "(s): ", ",",""))
 	def check[T](label: String, pair: (T, ListMap[String, _])): T = { check(pair._2, label); pair._1 }
 	def id(map: LabelMap, name: String, default: String): (String, LabelMap) =
-		(orElse(getOrNone(map, name), default), map - name)
+		(substituteVariables(orElse(getOrNone(map, name), default)), map - name)
 	def getOrNone[K,V](map: ListMap[K,Option[V]], k: K) = orElse(map.get(k), None)
 	def ids(map: LabelMap, name: String, default: List[String]) =
 	{
@@ -87,16 +87,17 @@ class ConfigurationParser extends NotNull
 		val (b, m) = id(map, name, default.toString)
 		(toBoolean(b), m)
 	}
+		
 	def toFiles(paths: List[String]): List[File] = paths.map(toFile)
-	def toFile(path: String): File = new File(path.replace('/', File.separatorChar))// if the path is relative, it will be resolved by Launch later
+	def toFile(path: String): File = new File(substituteVariables(path).replace('/', File.separatorChar))// if the path is relative, it will be resolved by Launch later
 	def file(map: LabelMap, name: String, default: File): (File, LabelMap) =
 		(orElse(getOrNone(map, name).map(toFile), default), map - name)
 
 	def getIvy(m: LabelMap): Option[File] =
 	{
-		val (cacheDir, m1) = file(m, "cache-directory", null) // fix this later
+		val (ivyHome, m1) = file(m, "ivy-home", null) // fix this later
 		check(m1, "label")
-		if(cacheDir eq null) None else Some(cacheDir)
+		if(ivyHome eq null) None else Some(ivyHome)
 	}
 	def getBoot(m: LabelMap): BootSetup =
 	{
@@ -162,7 +163,7 @@ class ConfigurationParser extends NotNull
 			case "set" => new SetProperty(requiredArg)
 			case _ => error("Unknown action '" + action + "' for property '"  + name + "'")
 		}
-	private lazy val propertyPattern = Pattern.compile("""(.+)\((.*)\)(?:\[(.*)\])?""") // examples: prompt(Version)[1.0] or set(1.0)
+	private[this] lazy val propertyPattern = Pattern.compile("""(.+)\((.*)\)(?:\[(.*)\])?""") // examples: prompt(Version)[1.0] or set(1.0)
 	def parsePropertyValue[T](name: String, definition: String)(f: (String, String, Option[String]) => T): T =
 	{
 		val m = propertyPattern.matcher(definition)
@@ -189,9 +190,34 @@ class ConfigurationParser extends NotNull
 			}
 		s._1
 	}
+
+	private[this] lazy val VarPattern = Pattern.compile("""\$\{([\w.]+)(\-(.+))?\}""")
+	def substituteVariables(s: String): String = if(s.indexOf('$') >= 0) substituteVariables0(s) else s
+	// scala.util.Regex brought in 30kB, so we code it explicitly
+	def substituteVariables0(s: String): String =
+	{
+		val m = VarPattern.matcher(s)
+		val b = new StringBuffer
+		while(m.find())
+		{
+			val key = m.group(1)
+			val defined = System.getProperty(key)
+			val value =
+				if(defined ne null)
+					defined
+				else
+				{
+					val default = m.group(3)
+					if(default eq null) m.group() else substituteVariables(default)
+				}
+			m.appendReplacement(b, value)
+		}
+		m.appendTail(b)
+		b.toString
+	}
 }
 
-sealed trait Line extends NotNull
+sealed trait Line
 final class Labeled(val label: String, val value: Option[String]) extends Line
 final class Section(val name: String) extends Line
 object Comment extends Line

@@ -1,5 +1,5 @@
 package sbt
-package compile
+package compiler
 
 	import java.io.File
 	import org.specs.Specification
@@ -14,6 +14,10 @@ package org.example {
 	abstract class Child extends Parent[String]
 	class S {
 		def x = new { def y = new S { def z = new Child { def x = "asdf" } } }
+		final val xconst = 3
+		private[this] def zz: Seq[_] = Nil
+		type L[M[_], P >: Int <: Int] = M[P]
+		type Q = L[Option, Int]
 	}
 	object Basic
 	trait Out {

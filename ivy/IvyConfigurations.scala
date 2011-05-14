@@ -6,9 +6,9 @@ package sbt
 import java.io.File
 import scala.xml.{Node, NodeSeq}
 
-final class IvyPaths(val baseDirectory: File, val cacheDirectory: Option[File])
+final class IvyPaths(val baseDirectory: File, val ivyHome: Option[File])
 {
-	def withBase(newBaseDirectory: File) = new IvyPaths(newBaseDirectory, cacheDirectory)
+	def withBase(newBaseDirectory: File) = new IvyPaths(newBaseDirectory, ivyHome)
 }
 sealed trait IvyConfiguration
 {
@@ -20,12 +20,12 @@ sealed trait IvyConfiguration
 }
 final class InlineIvyConfiguration(val paths: IvyPaths, val resolvers: Seq[Resolver], val otherResolvers: Seq[Resolver],
 	val moduleConfigurations: Seq[ModuleConfiguration], val localOnly: Boolean, val lock: Option[xsbti.GlobalLock],
-	val log: Logger) extends IvyConfiguration
+	val checksums: Seq[String], val log: Logger) extends IvyConfiguration
 {
 	type This = InlineIvyConfiguration
 	def baseDirectory = paths.baseDirectory
-	def withBase(newBase: File) = new InlineIvyConfiguration(paths.withBase(newBase), resolvers, otherResolvers, moduleConfigurations, localOnly, lock, log)
-	def changeResolvers(newResolvers: Seq[Resolver]) = new InlineIvyConfiguration(paths, newResolvers, otherResolvers, moduleConfigurations, localOnly, lock, log)
+	def withBase(newBase: File) = new InlineIvyConfiguration(paths.withBase(newBase), resolvers, otherResolvers, moduleConfigurations, localOnly, lock, checksums, log)
+	def changeResolvers(newResolvers: Seq[Resolver]) = new InlineIvyConfiguration(paths, newResolvers, otherResolvers, moduleConfigurations, localOnly, lock, checksums, log)
 }
 final class ExternalIvyConfiguration(val baseDirectory: File, val file: File, val lock: Option[xsbti.GlobalLock], val log: Logger) extends IvyConfiguration
 {
@@ -37,14 +37,14 @@ object IvyConfiguration
 {
 	/** Called to configure Ivy when inline resolvers are not specified.
 	* This will configure Ivy with an 'ivy-settings.xml' file if there is one or else use default resolvers.*/
-	def apply(paths: IvyPaths, lock: Option[xsbti.GlobalLock], localOnly: Boolean, log: Logger): IvyConfiguration =
+	def apply(paths: IvyPaths, lock: Option[xsbti.GlobalLock], localOnly: Boolean, checksums: Seq[String], log: Logger): IvyConfiguration =
 	{
 		log.debug("Autodetecting configuration.")
 		val defaultIvyConfigFile = IvySbt.defaultIvyConfiguration(paths.baseDirectory)
 		if(defaultIvyConfigFile.canRead)
 			new ExternalIvyConfiguration(paths.baseDirectory, defaultIvyConfigFile, lock, log)
 		else
-			new InlineIvyConfiguration(paths, Resolver.withDefaultResolvers(Nil), Nil, Nil, localOnly, lock, log)
+			new InlineIvyConfiguration(paths, Resolver.withDefaultResolvers(Nil), Nil, Nil, localOnly, lock, checksums, log)
 	}
 }
 
@@ -54,25 +54,24 @@ sealed trait ModuleSettings
 	def ivyScala: Option[IvyScala]
 	def noScala: ModuleSettings
 }
-final class IvyFileConfiguration(val file: File, val ivyScala: Option[IvyScala], val validate: Boolean) extends ModuleSettings
+final case class IvyFileConfiguration(file: File, ivyScala: Option[IvyScala], validate: Boolean) extends ModuleSettings
 {
-	def noScala = new IvyFileConfiguration(file, None, validate)
+	def noScala = copy(ivyScala = None)
 }
-final class PomConfiguration(val file: File, val ivyScala: Option[IvyScala], val validate: Boolean) extends ModuleSettings
+final case class PomConfiguration(file: File, ivyScala: Option[IvyScala], validate: Boolean) extends ModuleSettings
 {
-	def noScala = new PomConfiguration(file, None, validate)
+	def noScala = copy(ivyScala = None)
 }
-final class InlineConfiguration(val module: ModuleID, val dependencies: Seq[ModuleID], val ivyXML: NodeSeq,
-	val configurations: Seq[Configuration], val defaultConfiguration: Option[Configuration], val ivyScala: Option[IvyScala],
-	val validate: Boolean) extends ModuleSettings
+final case class InlineConfiguration(module: ModuleID, dependencies: Seq[ModuleID], ivyXML: NodeSeq,
+	configurations: Seq[Configuration], defaultConfiguration: Option[Configuration], ivyScala: Option[IvyScala],
+	validate: Boolean) extends ModuleSettings
 {
-	def withConfigurations(configurations: Seq[Configuration]) = 
-		new InlineConfiguration(module, dependencies, ivyXML, configurations, defaultConfiguration, ivyScala, validate)
-	def noScala = new InlineConfiguration(module, dependencies, ivyXML, configurations, defaultConfiguration, None, validate)
+	def withConfigurations(configurations: Seq[Configuration]) =  copy(configurations = configurations)
+	def noScala = copy(ivyScala = None)
 }
-final class EmptyConfiguration(val module: ModuleID, val ivyScala: Option[IvyScala], val validate: Boolean) extends ModuleSettings
+final case class EmptyConfiguration(module: ModuleID, ivyScala: Option[IvyScala], validate: Boolean) extends ModuleSettings
 {
-	def noScala = new EmptyConfiguration(module, None, validate)
+	def noScala = copy(ivyScala = None)
 }
 object InlineConfiguration
 {

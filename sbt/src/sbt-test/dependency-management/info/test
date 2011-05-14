@@ -1,13 +1,11 @@
-> update
 > check-download
-> deliver-local
 > check-info
 
 > clean
-> clean-lib
 $ touch info
+> reload
 
-> update
+> show custom-info
 > check-download
-> deliver-local
+> show custom-info
 > check-info

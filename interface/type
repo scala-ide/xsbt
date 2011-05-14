@@ -14,6 +14,9 @@ Type
 		Parameterized
 			baseType : SimpleType
 			typeArguments: Type*
+	Constant
+		baseType: Type
+		value: String
 	Annotated
 		baseType : SimpleType
 		annotations : Annotation*
