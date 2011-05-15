@@ -84,25 +84,11 @@ class Launch private[xsbt](val bootDirectory: File, val ivyOptions: IvyOptions) 
 	def getScala(version: String): xsbti.ScalaProvider = getScala(version, "")
 	def getScala(version: String, reason: String): xsbti.ScalaProvider = scalaProviders(version, reason)
 
-	lazy val topLoader = (new JNAProvider).loader
+	lazy val topLoader = new BootFilteredLoader(getClass.getClassLoader)
 	val updateLockFile = new File(bootDirectory, "sbt.boot.lock")
 
 	def globalLock: xsbti.GlobalLock = Locks
 	def ivyHome = ivyOptions.ivyHome.orNull
-
-	class JNAProvider extends Provider
-	{
-		lazy val id = new Application("net.java.dev.jna", "jna", new Explicit("3.2.3"), "", Nil, false, array())
-		lazy val configuration = new UpdateConfiguration(bootDirectory, ivyOptions.ivyHome, "", repositories)
-		lazy val libDirectory = new File(bootDirectory, baseDirectoryName(""))
-		def baseDirectories: List[File] = new File(libDirectory, appDirectoryName(id.toID, File.separator)) :: Nil
-		def testLoadClasses: List[String] = "com.sun.jna.Function" :: Nil
-		def extraClasspath = array()
-		def target = new UpdateApp(id, Nil)
-		lazy val parentLoader = new BootFilteredLoader(getClass.getClassLoader)
-		def failLabel = "JNA"
-		def lockFile = updateLockFile
-	}
 
 	class ScalaProvider(val version: String, override val reason: String) extends xsbti.ScalaProvider with Provider
 	{

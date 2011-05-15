@@ -89,6 +89,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 		//  with the sole purpose of providing certain identifiers without qualification (with a package object)
 	val sbtSub = project(sbtPath, "Simple Build Tool", new Sbt(_), mainSub)
 	val scriptedPluginSub = project("scripted" / "plugin", "Scripted Plugin", new Scripted(_), sbtSub, classpathSub)
+	val packageSub = project(sbtPath, "Package Simple Build Tool", new SbtPackageProject(_), sbtSub)
 
 	/** following modules are not updated for 2.8 or 0.9 */
 	/*
@@ -141,6 +142,12 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 			override def deliverProjectDependencies = Nil
 		}
 	}
+	
+	class SbtPackageProject(info: ProjectInfo) extends Base(info) with PackageProject with NoCrossPaths {
+    def rawPackage = `package`
+    def launcherProject = launchSub
+  }
+	
 	class InputProject(info: ProjectInfo) extends TestedBase(info)
 	{
 		val jline = jlineDep
@@ -164,7 +171,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	{
 		// these compilation options are useful for debugging caches and task composition
 		//override def compileOptions = super.compileOptions ++ List(Unchecked,ExplainTypes, CompileOption("-Xlog-implicits"))
-		val sbinary = "org.scala-tools.sbinary" % "sbinary_2.8.0" % "0.3.1"
+		val sbinary = "org.scala-tools.sbinary" % "sbinary_2.9.0" % "0.4.0"
 	}
 	class Base(info: ProjectInfo) extends DefaultProject(info) with ManagedBase with Component with Licensed
 	{
@@ -272,6 +279,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 		// each sub project here will add ~100k to the download
 		lazy val precompiled29 = precompiledSub("2.9.0")
 		lazy val precompiled28 = precompiledSub("2.8.0")
+		lazy val precompiled281 = precompiledSub("2.8.1")
 		lazy val precompiled27 = precompiledSub("2.7.7")
 
 		def precompiledSub(v: String) = 

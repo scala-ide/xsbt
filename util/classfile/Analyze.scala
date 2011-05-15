@@ -11,7 +11,7 @@ import java.lang.annotation.Annotation
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier.{STATIC, PUBLIC, ABSTRACT}
 
-private[sbt] object Analyze
+object Analyze
 {
 	def apply[T](outputDirectory: Path, sources: Seq[File], log: Logger)(analysis: xsbti.AnalysisCallback, loader: ClassLoader, readAPI: (File,Seq[Class[_]]) => Unit)(compile: => Unit)
 	{

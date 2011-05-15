@@ -4,7 +4,7 @@
 package sbt
 package compiler
 
-	import xsbti.{AnalysisCallback, Logger => xLogger, Reporter}
+	import xsbti.{AnalysisCallback, Logger => xLogger, Reporter, Controller}
 	import java.io.File
 	import java.net.{URL, URLClassLoader}
 
@@ -22,12 +22,12 @@ class AnalyzingCompiler(val scalaInstance: ScalaInstance, val manager: Component
 	}
 
 	def compile(arguments: Seq[String], callback: AnalysisCallback, maximumErrors: Int, log: Logger): Unit =
-		compile(arguments, callback, log, new LoggerReporter(maximumErrors, log))
-	def compile(arguments: Seq[String], callback: AnalysisCallback, log: Logger, reporter: Reporter)
+		compile(arguments, callback, log, new LoggerReporter(maximumErrors, log), NoProgressAndControlInfo)
+	def compile(arguments: Seq[String], callback: AnalysisCallback, log: Logger, reporter: Reporter, controller: Controller)
 	{
 		call("xsbt.CompilerInterface", log)(
-			classOf[Array[String]], classOf[AnalysisCallback], classOf[xLogger], classOf[Reporter] ) (
-			arguments.toArray[String] : Array[String], callback, log, reporter )
+			classOf[Array[String]], classOf[AnalysisCallback], classOf[xLogger], classOf[Reporter], classOf[Controller]) (
+			arguments.toArray[String] : Array[String], callback, log, reporter, controller)
 	}
 
 	def doc(sources: Seq[File], classpath: Seq[File], outputDirectory: File, options: Seq[String], maximumErrors: Int, log: Logger): Unit =
@@ -80,4 +80,9 @@ class AnalyzingCompiler(val scalaInstance: ScalaInstance, val manager: Component
 		new classpath.DualLoader(scalaLoader, notXsbtiFilter, x => true, sbtLoader, xsbtiFilter, x => false)
 	}
 	override def toString = "Analyzing compiler (Scala " + scalaInstance.actualVersion + ")"
+}
+
+private[sbt] object NoProgressAndControlInfo extends Controller {
+  def runInformUnitStarting(phaseName: String, unitPath: String) {}
+  def runProgress(current: Int, total: Int): Boolean = true
 }

@@ -3,13 +3,14 @@
  */
 package xsbt
 
-import xsbti.{AnalysisCallback,Logger,Problem,Reporter}
+import xsbti.{AnalysisCallback,Logger,Problem,Reporter,Controller}
 import scala.tools.nsc.{Phase, SubComponent}
 import Log.debug
 
 class CompilerInterface
 {
-	def run(args: Array[String], callback: AnalysisCallback, log: Logger, delegate: Reporter)
+	def run(args: Array[String], callback: AnalysisCallback, log: Logger,
+	        delegate: Reporter, controller: Controller)
 	{
 			import scala.tools.nsc.{Global, Settings}
 
@@ -82,9 +83,20 @@ class CompilerInterface
 		}
 		if(noErrors)
 		{
-			val run = new compiler.Run
-			debug(log, args.mkString("Calling Scala compiler with arguments  (CompilerInterface):\n\t", "\n\t", ""))
-			run compile command.files
+      trait Compat28 {
+        def informUnitStarting(phase: Phase, unit: compiler.CompilationUnit) {}
+      }
+			val run = new compiler.Run with Compat28 {
+        override def informUnitStarting(phase: Phase, unit: compiler.CompilationUnit) {
+          controller.runInformUnitStarting(phase.name, unit.source.path)
+        }
+        override def progress(current: Int, total: Int) {
+          if (!controller.runProgress(current, total))
+            cancel
+        }
+      }
+      debug(log, args.mkString("Calling Scala compiler with arguments  (CompilerInterface):\n\t", "\n\t", ""))
+      run compile command.files
 		}
 		reporter.printSummary()
 		if(!noErrors)

@@ -4,9 +4,8 @@
 package sbt
 
 import Types.:+:
-import sbinary.{DefaultProtocol, Format, Input, JavaIO, Output}
+import sbinary.{DefaultProtocol, Format, Input, Output}
 import DefaultProtocol.ByteFormat
-import JavaIO._
 import java.io.{File, InputStream, OutputStream}
 
 trait InputCache[I]
