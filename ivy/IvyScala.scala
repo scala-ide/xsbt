@@ -3,7 +3,7 @@
  */
 package sbt
 
-import java.util.Collections
+import java.util.Collections.emptyMap
 import scala.collection.mutable.HashSet
 
 import org.apache.ivy.{core, plugins}
@@ -17,6 +17,7 @@ object ScalaArtifacts
 	val Organization = "org.scala-lang"
 	val LibraryID = "scala-library"
 	val CompilerID = "scala-compiler"
+	def libraryDependency(version: String): ModuleID = ModuleID(Organization, LibraryID, version)
 }
 
 import ScalaArtifacts._
@@ -60,7 +61,7 @@ private object IvyScala
 		{
 			val id = dep.getDependencyRevisionId
 			if(id.getOrganisation == Organization && id.getRevision != scalaVersion && dep.getModuleConfigurations.exists(configSet))
-				error("Different Scala version specified in dependency ("+ id.getRevision + ") than in project (" + scalaVersion + ").")
+				error("Version specified for dependency " + id + " differs from Scala version in project (" + scalaVersion + ").")
 		}
 	}
 	private def configurationSet(configurations: Iterable[Configuration]) = configurations.map(_.toString).toSet
@@ -92,7 +93,7 @@ private object IvyScala
 	private def excludeRule(organization: String, name: String, configurationNames: Iterable[String]): ExcludeRule =
 	{
 		val artifact = new ArtifactId(ModuleId.newInstance(organization, name), "*", "jar", "*")
-		val rule = new DefaultExcludeRule(artifact, ExactPatternMatcher.INSTANCE, Collections.emptyMap[AnyRef,AnyRef])
+		val rule = new DefaultExcludeRule(artifact, ExactPatternMatcher.INSTANCE, emptyMap[AnyRef,AnyRef])
 		configurationNames.foreach(rule.addConfiguration)
 		rule
 	}

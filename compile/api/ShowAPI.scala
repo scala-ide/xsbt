@@ -54,8 +54,8 @@ trait ShowBase
 	implicit def showVariance: Show[Variance] = 
 		new Show[Variance] { def show(v: Variance) = v match { case Invariant => ""; case Covariant => "+"; case Contravariant => "-" } }
 	
-	implicit def showSource(implicit ps: Show[Package], ds: Show[Definition]): Show[Source] =
-		new Show[Source] { def show(a: Source) = lines(a.packages, ps) + "\n" + lines(a.definitions, ds) }
+	implicit def showSource(implicit ps: Show[Package], ds: Show[Definition]): Show[SourceAPI] =
+		new Show[SourceAPI] { def show(a: SourceAPI) = lines(a.packages, ps) + "\n" + lines(a.definitions, ds) }
 
 	implicit def showPackage: Show[Package] =
 		new Show[Package] { def show(pkg: Package) = "package " + pkg.name }
@@ -217,7 +217,7 @@ trait ShowTypes
 				// don't show inherited to avoid dealing with cycles
 				concat(s.parents, t, " with ") + "\n{\n" + lines(s.declared, d) + "\n}"
 		}
-	implicit def showAnnotated(implicit as: Show[Annotation], t: Show[SimpleType]): Show[Annotated] = 
+	implicit def showAnnotated(implicit as: Show[Annotation], t: Show[Type]): Show[Annotated] = 
 		new Show[Annotated] { def show(a: Annotated) = spaced(a.annotations, as) + " " + t.show(a.baseType) }
 	implicit def showProjection(implicit t: Show[SimpleType]): Show[Projection] =
 		new Show[Projection] { def show(p: Projection) = t.show(p.prefix) + "#" + p.id }

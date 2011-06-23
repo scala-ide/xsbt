@@ -57,7 +57,7 @@ class AggressiveCompile(cacheDirectory: File)
 			IO.createDirectory(outputDirectory)
 			val incSrc = sources.filter(include)
 			val (javaSrcs, scalaSrcs) = incSrc partition javaOnly
-			println("Compiling:\n\t" + incSrc.mkString("\n\t"))
+			logInputs(log, javaSrcs.size, scalaSrcs.size, outputDirectory)
 			def compileScala() =
 				if(!scalaSrcs.isEmpty)
 				{
@@ -69,7 +69,7 @@ class AggressiveCompile(cacheDirectory: File)
 				if(!javaSrcs.isEmpty)
 				{
 					import Path._
-					val loader = ClasspathUtilities.toLoader(absClasspath, compiler.scalaInstance.loader)
+					val loader = ClasspathUtilities.toLoader(searchClasspath)
 					def readAPI(source: File, classes: Seq[Class[_]]) { callback.api(source, ClassToAPI(classes)) }
 					Analyze(outputDirectory, javaSrcs, log)(callback, loader, readAPI) {
 						javac(javaSrcs, absClasspath, outputDirectory, options.javacOptions)
@@ -83,7 +83,15 @@ class AggressiveCompile(cacheDirectory: File)
 			case Some(previous) if equiv.equiv(previous, currentSetup) => previousAnalysis
 			case _ => Incremental.prune(sourcesSet, previousAnalysis)
 		}
-		IncrementalCompile(sourcesSet, entry, compile0, analysis, getAnalysis, outputDirectory)
+		IncrementalCompile(sourcesSet, entry, compile0, analysis, getAnalysis, outputDirectory, log)
+	}
+	private[this] def logInputs(log: Logger, javaCount: Int, scalaCount: Int, out: File)
+	{
+		val scalaMsg = Util.counted("Scala source", "", "s", scalaCount)
+		val javaMsg = Util.counted("Java source", "", "s", javaCount)
+		val combined = scalaMsg ++ javaMsg
+		if(!combined.isEmpty)
+			log.info(combined.mkString("Compiling ", " and ", " to " + out.getAbsolutePath + "..."))
 	}
 	private def extract(previous: Option[(Analysis, CompileSetup)]): (Analysis, Option[CompileSetup]) =
 		previous match

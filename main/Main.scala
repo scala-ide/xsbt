@@ -15,6 +15,7 @@ package sbt
 	import scala.collection.JavaConversions._
 	import Function.tupled
 	import java.net.URI
+	import java.lang.reflect.InvocationTargetException
 	import Path._
 
 	import java.io.File
@@ -85,7 +86,7 @@ object BuiltinCommands
 	def ConsoleCommands: Seq[Command] = Seq(ignore, exit, IvyConsole.command, act, nop)
 	def ScriptCommands: Seq[Command] = Seq(ignore, exit, Script.command, act, nop)
 	def DefaultCommands: Seq[Command] = Seq(ignore, help, reboot, read, history, continuous, exit, loadProject, loadProjectImpl, loadFailed, Cross.crossBuild, Cross.switchVersion,
-		projects, project, setOnFailure, clearOnFailure, ifLast, multi, shell, set, inspect, eval, alias, append, last, lastGrep, nop, sessionCommand, act)
+		projects, project, setOnFailure, clearOnFailure, ifLast, multi, shell, set, tasks, inspect, eval, alias, append, last, lastGrep, nop, sessionCommand, act)
 	def DefaultBootCommands: Seq[String] = LoadProject :: (IfLast + " " + Shell) :: Nil
 
 	def nop = Command.custom(s => success(() => s))
@@ -108,12 +109,33 @@ object BuiltinCommands
 	{
 		val message =
 			if(args.isEmpty)
-				h.map( _.brief match { case (a,b) => a + " : " + b } ).mkString("\n", "\n", "\n")
+				aligned("  ", "   ", h.map(_.brief)).mkString("\n", "\n", "\n")
 			else
 				h flatMap detail(args) mkString("\n", "\n\n", "\n")
 		System.out.println(message)
 		s
 	}
+
+	def tasks = Command.command(TasksCommand, tasksBrief, tasksDetailed) { s =>
+		System.out.println(tasksPreamble)
+		System.out.println(tasksHelp(s))
+		s
+	}
+	def tasksHelp(s: State): String =
+	{
+		val extracted = Project.extract(s)
+		import extracted._
+		val index = structure.index
+		val pairs = index.keyIndex.keys(Some(currentRef)).toSeq map index.keyMap sortBy(_.label) flatMap taskStrings
+		aligned("  ", "   ", pairs) mkString("\n", "\n", "")
+	}
+	def taskStrings(key: AttributeKey[_]): Option[(String, String)]  =  key.description map { d => (key.label, d) }
+	def aligned(pre: String, sep: String, in: Seq[(String, String)]): Seq[String] =
+	{
+		val width = in.map(_._1.length).max
+		in.map { case (a, b) => ("  " + fill(a, width) + sep + b) }
+	}
+	def fill(s: String, size: Int)  =  s + " " * math.max(size - s.length, 0)
 
 	def alias = Command.make(AliasCommand, AliasBrief, AliasDetailed) { s =>
 		val name = token(OpOrID.examples( aliasNames(s) : _*) )
@@ -359,14 +381,19 @@ object BuiltinCommands
 		{
 			case _: Incomplete => () // already handled by evaluateTask
 			case _: NoMessageException => ()
-			case _: MessageOnlyException =>
-				log.error(e.toString)
-			case _ =>
-				log.trace(e)
-				log.error(e.toString)
-				log.error("Use 'last' for the full log.")
+			case ite: InvocationTargetException =>
+				val cause = ite.getCause
+				if(cause == null || cause == ite) logFullException(ite, log) else handleException(cause, s, log)
+			case _: MessageOnlyException => log.error(e.toString)
+			case _ => logFullException(e, log)
 		}
 		s.fail
+	}
+	def logFullException(e: Throwable, log: Logger)
+	{
+		log.trace(e)
+		log.error(ErrorHandling reducedToString e)
+		log.error("Use 'last' for the full log.")
 	}
 	
 	def addAlias(s: State, name: String, value: String): State =

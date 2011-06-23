@@ -13,11 +13,10 @@ object ConsoleProject
 		val extracted = Project extract state
 		val bindings = ("currentState" -> state) :: ("extracted" -> extracted ) :: Nil
 		val unit = extracted.currentUnit
-		val compiler = Compiler.compilers(state.configuration, log).scalac
+		val compiler = Compiler.compilers(ClasspathOptions.repl)(state.configuration, log).scalac
 		val imports = Load.getImports(unit.unit) ++ Load.importAll(bindings.map(_._1))
 		val importString = imports.mkString("", ";\n", ";\n\n")
 		val initCommands = importString + extra
-		val loader = classOf[State].getClassLoader				
-		(new Console(compiler))(unit.classpath, Nil, initCommands)(Some(loader), bindings)
+		(new Console(compiler))(unit.classpath, Nil, initCommands)(Some(unit.loader), bindings)
 	}
 }
