@@ -158,6 +158,7 @@ object Scoped
 		final def apply[T](f: S => T): Initialize[T] = Apply.single(scoped)(f)
 		final def identity: Initialize[S] = apply(idFun)
 		final def ? : Initialize[Option[S]] = Project.optional(scoped)(idFun)
+		final def or[T >: S](i: Initialize[T]): Initialize[T] = (this.? zipWith i)(_ getOrElse _ )
 		final def ??[T >: S](or: => T): Initialize[T] = Project.optional(scoped)(_ getOrElse or )
 
 		final def get(settings: Settings[Scope]): Option[S] = settings.get(scope, key)
@@ -197,6 +198,7 @@ object Scoped
 		def identity: App[S] = mk(idFun)
 		def ? : Initialize[Task[Option[S]]] = Project.optional(scoped) { case None => mktask { None }; case Some(t) => t map some.fn }
 		def ??[T >: S](or: => T): Initialize[Task[T]] = Project.optional(scoped)( _ getOrElse mktask(or) )
+		def or[T >: S](i: Initialize[Task[T]]): Initialize[Task[T]] = (this.? zipWith i)( (x,y) => (x :^: y :^: KNil) map hf2( _ getOrElse _ ))
 
 		def || [T >: S](alt: Task[T]): App[T]  =  mk(_ || alt)
 		def && [T](alt: Task[T]): App[T]  =  mk(_ && alt)
@@ -261,7 +263,7 @@ object Scoped
 		def **(filter: FileFilter): Initialize[Seq[File]] = map0 { _ ** filter }
 		protected[this] def map0(f: PathFinder => PathFinder): Initialize[Seq[File]]
 		protected[this] def finder(f: PathFinder => PathFinder): Seq[File] => Seq[File] =
-			in => f(in).getFiles
+			in => f(in).get
 	}
 
 	/*
@@ -520,27 +522,41 @@ object Scoped
 	def k7[M[_], A, B, C, D, E, F, G](t7: (M[A], M[B], M[C], M[D], M[E], M[F], M[G])) = t7._1 :^: t7._2 :^: t7._3 :^: t7._4 :^: t7._5 :^: t7._6 :^: t7._7 :^: KNil
 	def k8[M[_], A, B, C, D, E, F, G, H](t8: (M[A], M[B], M[C], M[D], M[E], M[F], M[G], M[H])) = t8._1 :^: t8._2 :^: t8._3 :^: t8._4 :^: t8._5 :^: t8._6 :^: t8._7 :^: t8._8 :^: KNil
 	def k9[M[_], A, B, C, D, E, F, G, H, I](t9: (M[A], M[B], M[C], M[D], M[E], M[F], M[G], M[H], M[I])) = t9._1 :^: t9._2 :^: t9._3 :^: t9._4 :^: t9._5 :^: t9._6 :^: t9._7 :^: t9._8 :^: t9._9 :^: KNil
+
+	private[sbt] def extendScoped(s1: Scoped, ss: Seq[Scoped]): Seq[AttributeKey[_]]  =  s1.key +: ss.map(_.key)
 }
+
+	import Scoped.extendScoped
+
 object InputKey
 {
-	def apply[T](label: String, description: String = ""): InputKey[T] =
+	def apply[T: Manifest](label: String, description: String = ""): InputKey[T] =
 		apply( AttributeKey[InputTask[T]](label, description) )
+
+	def apply[T: Manifest](label: String, description: String, extend1: Scoped, extendN: Scoped*): InputKey[T] =
+		apply( AttributeKey[InputTask[T]](label, description, extendScoped(extend1, extendN)) )
 
 	def apply[T](akey: AttributeKey[InputTask[T]]): InputKey[T] =
 		new InputKey[T](akey)
 }
 object TaskKey
 {
-	def apply[T](label: String, description: String = ""): TaskKey[T] =
+	def apply[T: Manifest](label: String, description: String = ""): TaskKey[T] =
 		apply( AttributeKey[Task[T]](label, description) )
+
+	def apply[T: Manifest](label: String, description: String, extend1: Scoped, extendN: Scoped*): TaskKey[T] =
+		apply( AttributeKey[Task[T]](label, description, extendScoped(extend1, extendN)) )
 
 	def apply[T](akey: AttributeKey[Task[T]]): TaskKey[T] =
 		new TaskKey[T](akey)
 }
 object SettingKey
 {
-	def apply[T](label: String, description: String = ""): SettingKey[T] =
+	def apply[T: Manifest](label: String, description: String = ""): SettingKey[T] =
 		apply( AttributeKey[T](label, description) )
+
+	def apply[T: Manifest](label: String, description: String, extend1: Scoped, extendN: Scoped*): SettingKey[T] =
+		apply( AttributeKey[T](label, description, extendScoped(extend1, extendN)) )
 
 	def apply[T](akey: AttributeKey[T]): SettingKey[T] =
 		new SettingKey[T](akey)

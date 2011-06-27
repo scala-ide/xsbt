@@ -110,6 +110,7 @@ class Changed[O](val cacheFile: File)(implicit equiv: Equiv[O], format: Format[O
 			ifChanged(value)
 		}
 	}
+
 	def update(value: O): Unit = Using.fileOutputStream(false)(cacheFile)(stream => format.writes(stream, value))
 	def uptodate(value: O): Boolean =
 		try {

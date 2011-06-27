@@ -24,6 +24,7 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 {
 	import global._
 	def error(msg: String) = throw new RuntimeException(msg)
+	def debug(msg: String) = if(settings.verbose.value) inform(msg)
 
 	def newPhase(prev: Phase) = new ApiPhase(prev)
 	class ApiPhase(prev: Phase) extends Phase(prev)
@@ -35,17 +36,17 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 			val start = System.currentTimeMillis
 			currentRun.units.foreach(processUnit)
 			val stop = System.currentTimeMillis
-			println("API phase took : " + ((stop - start)/1000.0) + " s")
+			debug("API phase took : " + ((stop - start)/1000.0) + " s")
 		}
 		def processUnit(unit: CompilationUnit) = if(!unit.isJava) processScalaUnit(unit)
 		def processScalaUnit(unit: CompilationUnit)
 		{
 			val sourceFile = unit.source.file.file
-			println("Traversing " + sourceFile)
+			debug("Traversing " + sourceFile)
 			val traverser = new TopLevelHandler(sourceFile)
 			traverser.apply(unit.body)
 			val packages = traverser.packages.toArray[String].map(p => new xsbti.api.Package(p))
-			val source = new xsbti.api.Source(packages, traverser.definitions.toArray[xsbti.api.Definition])
+			val source = new xsbti.api.SourceAPI(packages, traverser.definitions.toArray[xsbti.api.Definition])
 			forceStructures()
 			clearCaches()
 			callback.api(sourceFile, source)
@@ -107,7 +108,7 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 		processType(in, t) match
 		{
 			case s: SimpleType => s
-			case x => error("Not a simple type:\n\tType: " + t + " (class " + t.getClass + ")\n\tTransformed: " + x.getClass)
+			case x => warning("Not a simple type:\n\tType: " + t + " (class " + t.getClass + ")\n\tTransformed: " + x.getClass); Constants.emptyType
 		}
 	private def types(in: Symbol, t: List[Type]): Array[xsbti.api.Type] = t.toArray[Type].map(processType(in, _))
 	private def projectionType(in: Symbol, pre: Type, sym: Symbol) =
@@ -132,7 +133,7 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 
 	private def annotations(in: Symbol, as: List[AnnotationInfo]): Array[xsbti.api.Annotation] = as.toArray[AnnotationInfo].map(annotation(in,_))
 	private def annotation(in: Symbol, a: AnnotationInfo) =
-		new xsbti.api.Annotation(simpleType(in, a.atp),
+		new xsbti.api.Annotation(processType(in, a.atp),
 			if(a.assocs.isEmpty) Array(new xsbti.api.AnnotationArgument("", a.args.mkString("(", ",", ")"))) // what else to do with a Tree?
 			else a.assocs.map { case (name, value) => new xsbti.api.AnnotationArgument(name.toString, value.toString) }.toArray[xsbti.api.AnnotationArgument]
 		)
@@ -323,14 +324,14 @@ final class API(val global: Global, val callback: xsbti.AnalysisCallback) extend
 			case TypeRef(pre, sym, args) =>
 				val base = projectionType(in, pre, sym)
 				if(args.isEmpty) base else new xsbti.api.Parameterized(base, types(in, args))
-			case SuperType(thistpe: Type, supertpe: Type) => error("Super type (not implemented): this=" + thistpe + ", super=" + supertpe)
+			case SuperType(thistpe: Type, supertpe: Type) => warning("sbt-api: Super type (not implemented): this=" + thistpe + ", super=" + supertpe); Constants.emptyType
 			case at: AnnotatedType => annotatedType(in, at)
 			case rt: CompoundType => structure(rt)
 			case ExistentialType(tparams, result) => new xsbti.api.Existential(processType(in, result), typeParameters(in, tparams))
-			case NoType => error("NoType")
+			case NoType => Constants.emptyType // this can happen when there is an error that will be reported by a later phase
 			case PolyType(typeParams, resultType) => new xsbti.api.Polymorphic(processType(in, resultType), typeParameters(in, typeParams))
-			case Nullary(resultType) => error("Unexpected nullary method type " + in + " in " + in.owner)
-			case _ => error("Unhandled type " + t.getClass + " : " + t)
+			case Nullary(resultType) => warning("sbt-api: Unexpected nullary method type " + in + " in " + in.owner); Constants.emptyType
+			case _ => warning("sbt-api: Unhandled type " + t.getClass + " : " + t); Constants.emptyType
 		}
 	}
 	private def typeParameters(in: Symbol, s: Symbol): Array[xsbti.api.TypeParameter] = typeParameters(in, s.typeParams)

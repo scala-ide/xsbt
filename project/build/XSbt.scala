@@ -38,8 +38,6 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	val classfileSub = testedBase(utilPath / "classfile", "Classfile", ioSub, interfaceSub, logSub)
 		// generates immutable or mutable Java data types according to a simple input format
 	val datatypeSub = baseProject(utilPath /"datatype", "Datatype Generator", ioSub)
-		// persisted, hierarchical properties
-	val envSub= baseProject(utilPath / "env", "Properties", ioSub, logSub, classpathSub)
 
 	/***** Intermediate-level Modules *****/
 
@@ -63,7 +61,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	val compileInterfaceSub = project(compilePath / "interface", "Compiler Interface", new CompilerInterfaceProject(_), interfaceSub)
 		// Implements the core functionality of detecting and propagating changes incrementally.
 		//   Defines the data structures for representing file fingerprints and relationships and the overall source analysis
-	val compileIncrementalSub = testedBase(compilePath / "inc", "Incremental Compiler", collectionSub, apiSub, ioSub)
+	val compileIncrementalSub = testedBase(compilePath / "inc", "Incremental Compiler", collectionSub, apiSub, ioSub, logSub)
 		// Persists the incremental data structures using SBinary
 	val compilePersistSub = project(compilePath / "persist", "Persist", new PersistProject(_), compileIncrementalSub, apiSub)
 		// sbt-side interface to compiler.  Calls compiler-side interface reflectively
@@ -83,7 +81,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 		interfaceSub, ioSub, ivySub, logSub, processSub, runSub, stdTaskSub, taskSub, trackingSub, testingSub)
 
 		// The main integration project for sbt.  It brings all of the subsystems together, configures them, and provides for overriding conventions.
-	val mainSub = baseProject(mainPath, "Main", actionsSub, interfaceSub, ioSub, ivySub, launchInterfaceSub, logSub, processSub, runSub)
+	val mainSub = project(mainPath, "Main", new Main(_), actionsSub, interfaceSub, ioSub, ivySub, launchInterfaceSub, logSub, processSub, runSub)
 		// Strictly for bringing implicits and aliases from subsystems into the top-level sbt namespace through a single package object
 		//  technically, we need a dependency on all of mainSub's dependencies, but we don't do that since this is strictly an integration project
 		//  with the sole purpose of providing certain identifiers without qualification (with a package object)
@@ -154,8 +152,8 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	}
 	trait TestDependencies extends Project
 	{
-		val sc = "org.scala-tools.testing" % "scalacheck_2.8.1" % "1.8" % "test"
-		val sp = "org.scala-tools.testing" % "specs_2.8.1" % "1.6.7.2" % "test"
+		val sc = "org.scala-tools.testing" %% "scalacheck" % "1.8" % "test"
+		val sp = "org.scala-tools.testing" %% "specs" % "1.6.8" % "test"
 	}
 	class LogProject(info: ProjectInfo) extends Base(info) with TestDependencies
 	{
@@ -172,6 +170,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 		// these compilation options are useful for debugging caches and task composition
 		//override def compileOptions = super.compileOptions ++ List(Unchecked,ExplainTypes, CompileOption("-Xlog-implicits"))
 		val sbinary = "org.scala-tools.sbinary" % "sbinary_2.9.0" % "0.4.0"
+//		val sbinary = "org.scala-tools.sbinary" %% "sbinary" % "0.4.0"
 	}
 	class Base(info: ProjectInfo) extends DefaultProject(info) with ManagedBase with Component with Licensed
 	{
@@ -202,6 +201,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 	class IvyProject(info: ProjectInfo) extends Base(info) with TestWithIO with TestWithLog with TestWithLaunch
 	{
 		val ivy = "org.apache.ivy" % "ivy" % "2.2.0"
+		val jsch = "com.jcraft" % "jsch" % "0.1.31" intransitive()
 	}
 	abstract class BaseInterfaceProject(info: ProjectInfo) extends DefaultProject(info) with ManagedBase with TestWithLog with Component with JavaProject
 	class InterfaceProject(info: ProjectInfo) extends BaseInterfaceProject(info)
@@ -322,7 +322,7 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 		override def testCompileAction = super.testCompileAction dependsOn((testWithTestClasspath.map(_.testCompile) ++ testWithCompileClasspath.map(_.compile)) : _*)
 		override def testClasspath = (super.testClasspath /: (testWithTestClasspath.map(_.testClasspath) ++  testWithCompileClasspath.map(_.compileClasspath) ))(_ +++ _)
 	}
-	class Sbt(info: ProjectInfo) extends Base(info) with TestWith
+	class Sbt(info: ProjectInfo) extends Base(info) with TestWith with posterous.Publish
 	{
 		override def normalizedName = "sbt"
 		override def testWithCompileClasspath = super.testWithCompileClasspath ++ Seq(scriptedSbtSub)
@@ -337,5 +337,17 @@ class XSbt(info: ProjectInfo) extends ParentProject(info) with NoCrossPaths
 			catch { case e: java.lang.reflect.InvocationTargetException => throw e.getCause }
 			None
 		} dependsOn(publishLocal, scriptedSbtSub.compile, testCompile) }
+	}
+	class Main(info: ProjectInfo) extends Base(info) with Sxr
+	{
+		def concatPaths[T](s: Seq[T])(f: PartialFunction[T, PathFinder]): PathFinder =
+		{
+			def finder: T => PathFinder = (f orElse { case _ => Path.emptyPathFinder })
+			(Path.emptyPathFinder /: s) { _ +++ finder(_) }
+		}
+		def deepBaseDirectories = Path.finder { topologicalSort.flatMap { case p: ScalaPaths => p.mainSourceRoots.getFiles } }
+		def deepSources = concatPaths(mainSub.topologicalSort){ case p: ScalaPaths => p.mainSources }
+//		override def documentOptions = CompoundDocOption("-sourcepath", deepBaseDirectories.absString) :: LinkSource :: super.documentOptions.toList
+		lazy val sbtGenDoc = scaladocTask("sbt", deepSources, docPath, docClasspath, documentOptions) dependsOn(compile)
 	}
 }

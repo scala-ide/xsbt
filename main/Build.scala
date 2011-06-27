@@ -16,7 +16,8 @@ package sbt
 // name is more like BuildDefinition, but that is too long
 trait Build
 {
-	def projects: Seq[Project]
+	def projectDefinitions(baseDirectory: File): Seq[Project] = projects
+	def projects: Seq[Project] = ReflectUtilities.allVals[Project](this).values.toSeq
 	def settings: Seq[Setting[_]] = Defaults.buildCore
 	def buildResolvers: Seq[BuildLoader.BuildResolver] = Nil
 }
@@ -27,8 +28,7 @@ trait Plugin
 
 object Build
 {
-	def default(base: File): Build = new Build { def projects = defaultProject("default", base) :: Nil }
-	def defaultProject(id: String, base: File): Project = Project(id, base)
+	val default: Build = new Build { override def projectDefinitions(base: File) = Project("default", base) :: Nil }
 
 	def data[T](in: Seq[Attributed[T]]): Seq[T] = in.map(_.data)
 	def analyzed(in: Seq[Attributed[_]]): Seq[inc.Analysis] = in.flatMap{ _.metadata.get(Keys.analysis) }
@@ -97,13 +97,17 @@ object EvaluateConfigurations
 		}
 		result.value.asInstanceOf[Project.SettingsDefinition].settings
 	}
-	private[this] def fstS(f: String => Boolean): ((String,Int)) => Boolean = { case (s,i) => f(s.trim) }
+	private[this] def isSpace = (c: Char) => Character isSpace c
+	private[this] def fstS(f: String => Boolean): ((String,Int)) => Boolean = { case (s,i) => f(s) }
+	private[this] def firstNonSpaceIs(lit: String) = (_: String).view.dropWhile(isSpace).startsWith(lit)
+	private[this] def or[A](a: A => Boolean, b: A => Boolean): A => Boolean = in => a(in) || b(in)
 	def splitExpressions(lines: Seq[String]): (Seq[(String,Int)], Seq[(String,Int)]) =
 	{
-		val blank = (_: String).isEmpty
-		val comment = (_: String).startsWith("//")
-		val blankOrComment = (s: String) => blank(s) || comment(s)
-		val importOrBlank = fstS(t => blankOrComment(t) || (t startsWith "import "))
+		val blank = (_: String).forall(isSpace)
+		val isImport = firstNonSpaceIs("import ")
+		val comment = firstNonSpaceIs("//")
+		val blankOrComment = or(blank, comment)
+		val importOrBlank = fstS(or(blankOrComment, isImport))
 
 		val (imports, settings) = lines.zipWithIndex span importOrBlank
 		(imports filterNot fstS( blankOrComment ), groupedLines(settings, blank, blankOrComment))
@@ -135,12 +139,12 @@ object Index
 	}
 	def stringToKeyMap(settings: Settings[Scope]): Map[String, AttributeKey[_]] =
 	{
-		val multiMap = settings.data.values.flatMap(_.keys).toList.distinct.groupBy(_.label)
-		val duplicates = multiMap collect { case (k, x1 :: x2 :: _) => k }
+		val multiMap = settings.data.values.flatMap(_.keys).toSet[AttributeKey[_]].groupBy(_.label)
+		val duplicates = multiMap collect { case (k, xs) if xs.size > 1 => (k, xs.map(_.manifest)) } collect { case (k, xs) if xs.size > 1 => (k, xs) }
 		if(duplicates.isEmpty)
 			multiMap.collect { case (k, v) if validID(k) => (k, v.head) } toMap;
 		else
-			error(duplicates.mkString("AttributeKey ID collisions detected for '", "', '", "'"))
+			error(duplicates map { case (k, tps) => "'" + k + "' (" + tps.mkString(", ") + ")" } mkString("AttributeKey ID collisions detected for: ", ", ", ""))
 	}
 	private[this] type TriggerMap = collection.mutable.HashMap[Task[_], Seq[Task[_]]]
 	def triggers(ss: Settings[Scope]): Triggers[Task] =
@@ -220,17 +224,17 @@ object BuildPaths
 	def defaultStaging = Path.userHome / ConfigDirectoryName / "staging"
 	def defaultGlobalPlugins = Path.userHome / ConfigDirectoryName / PluginsDirectoryName
 	
-	def definitionSources(base: File): Seq[File] = (base * "*.scala").getFiles
-	def configurationSources(base: File): Seq[File] = (base * "*.sbt").getFiles
-	def pluginDirectory(definitionBase: Path) = definitionBase / PluginsDirectoryName
+	def definitionSources(base: File): Seq[File] = (base * "*.scala").get
+	def configurationSources(base: File): Seq[File] = (base * "*.sbt").get
+	def pluginDirectory(definitionBase: File) = definitionBase / PluginsDirectoryName
 
-	def evalOutputDirectory(base: Path) = outputDirectory(base) / "config-classes"
-	def outputDirectory(base: Path) = base / DefaultTargetName
-	def buildOutputDirectory(base: Path, compilers: Compilers) = crossPath(outputDirectory(base), compilers.scalac.scalaInstance)
+	def evalOutputDirectory(base: File) = outputDirectory(base) / "config-classes"
+	def outputDirectory(base: File) = base / DefaultTargetName
+	def buildOutputDirectory(base: File, compilers: Compilers) = crossPath(outputDirectory(base), compilers.scalac.scalaInstance)
 
-	def projectStandard(base: Path) = base / "project"
-	def projectHidden(base: Path) = base / ConfigDirectoryName
-	def selectProjectDir(base: Path) =
+	def projectStandard(base: File) = base / "project"
+	def projectHidden(base: File) = base / ConfigDirectoryName
+	def selectProjectDir(base: File) =
 	{
 		val a = projectHidden(base)
 		val b = projectStandard(base)

@@ -9,7 +9,8 @@ import ConfigurationParser._
 import java.lang.Character.isWhitespace
 import java.io.{BufferedReader, File, FileInputStream, InputStreamReader, Reader, StringReader}
 import java.net.{MalformedURLException, URL}
-import java.util.regex.Pattern
+import java.util.regex.{Matcher,Pattern}
+import Matcher.quoteReplacement
 import scala.collection.immutable.List
 
 object ConfigurationParser
@@ -107,8 +108,9 @@ class ConfigurationParser
 		val (enableQuick, m4) = bool(m3, "quick-option", false)
 		val (promptFill, m5) = bool(m4, "prompt-fill", false)
 		val (promptCreate, m6) = id(m5, "prompt-create", "")
-		check(m6, "label")
-		BootSetup(dir, props, search, promptCreate, enableQuick, promptFill)
+		val (lock, m7) = bool(m6, "lock", true)
+		check(m7, "label")
+		BootSetup(dir, lock, props, search, promptCreate, enableQuick, promptFill)
 	}
 	def getLogging(m: LabelMap): Logging = check("label", process(m, "level", getLevel))
 	def getLevel(m: Option[String]) = m.map(LogLevel.apply).getOrElse(new Logging(LogLevel.Info))
@@ -210,7 +212,7 @@ class ConfigurationParser
 					val default = m.group(3)
 					if(default eq null) m.group() else substituteVariables(default)
 				}
-			m.appendReplacement(b, value)
+			m.appendReplacement(b, quoteReplacement(value))
 		}
 		m.appendTail(b)
 		b.toString

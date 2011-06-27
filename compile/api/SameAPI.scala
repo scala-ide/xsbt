@@ -19,8 +19,12 @@ class NameChanges(val newTypes: Set[String], val removedTypes: Set[String], val 
 
 object TopLevel
 {
+	def nameChanges(a: Iterable[Source], b: Iterable[Source]): NameChanges = {
+		val api = (_: Source).api
+		apiNameChanges(a map api, b map api)
+	}
 	/** Identifies removed and new top-level definitions by name. */
-	def nameChanges(a: Iterable[Source], b: Iterable[Source]): NameChanges =
+	def apiNameChanges(a: Iterable[SourceAPI], b: Iterable[SourceAPI]): NameChanges =
 	{
 		def changes(s: Set[String], t: Set[String]) = (s -- t, t -- s)
 
@@ -32,14 +36,14 @@ object TopLevel
 
 		new NameChanges(newTypes, removedTypes, newTerms, removedTerms)
 	}
-	def definitions(i: Iterable[Source]) = SameAPI.separateDefinitions(i.toSeq.flatMap( _.definitions ))
+	def definitions(i: Iterable[SourceAPI]) = SameAPI.separateDefinitions(i.toSeq.flatMap( _.definitions ))
 	def names(s: Iterable[Definition]): Set[String] = Set() ++ s.map(_.name)
 }
 	import TagTypeVariables.TypeVars
 /** Checks the API of two source files for equality.*/
 object SameAPI
 {
-	def apply(a: Source, b: Source) =
+	def apply(a: SourceAPI, b: SourceAPI) =
 	{
 		val start = System.currentTimeMillis
 		
@@ -98,18 +102,18 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 	}
 
 	/** Returns true if source `a` has the same API as source `b`.*/
-	def check(a: Source, b: Source): Boolean =
+	def check(a: SourceAPI, b: SourceAPI): Boolean =
 	{
 		samePackages(a, b) &&
 		debug(sameDefinitions(a, b), "Definitions differed")
 	}
 
-	def samePackages(a: Source, b: Source): Boolean =
+	def samePackages(a: SourceAPI, b: SourceAPI): Boolean =
 		sameStrings(packages(a), packages(b))
-	def packages(s: Source): Set[String] =
+	def packages(s: SourceAPI): Set[String] =
 		Set() ++ s.packages.map(_.name)
 
-	def sameDefinitions(a: Source, b: Source): Boolean =
+	def sameDefinitions(a: SourceAPI, b: SourceAPI): Boolean =
 		sameDefinitions(a.definitions, b.definitions, true)
 	def sameDefinitions(a: Seq[Definition], b: Seq[Definition], topLevel: Boolean): Boolean =
 	{
@@ -211,7 +215,7 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 	def sameAnnotations(a: Seq[Annotation], b: Seq[Annotation]): Boolean =
 		sameSeq(a, b)(sameAnnotation)
 	def sameAnnotation(a: Annotation, b: Annotation): Boolean =
-		debug(sameSimpleType(a.base, b.base), "Annotation base type differed") &&
+		debug(sameType(a.base, b.base), "Annotation base type differed") &&
 		debug(sameAnnotationArguments(a.arguments, b.arguments), "Annotation arguments differed (" + a + ") and (" + b + ")")
 	def sameAnnotationArguments(a: Seq[AnnotationArgument], b: Seq[AnnotationArgument]): Boolean =
 		argumentMap(a) == argumentMap(b)
@@ -309,10 +313,10 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 	def sameTypeDirect(a: Type, b: Type): Boolean =
 		(a, b) match
 		{
-			case (sa: SimpleType, sb: SimpleType) => debug(sameSimpleType(sa, sb), "Different simple types: " + DefaultShowAPI(sa) + " and " + DefaultShowAPI(sb))
+			case (sa: SimpleType, sb: SimpleType) => debug(sameSimpleTypeDirect(sa, sb), "Different simple types: " + DefaultShowAPI(sa) + " and " + DefaultShowAPI(sb))
 			case (ca: Constant, cb: Constant) => debug(sameConstantType(ca, cb), "Different constant types: " + DefaultShowAPI(ca) + " and " + DefaultShowAPI(cb))
 			case (aa: Annotated, ab: Annotated) => debug(sameAnnotatedType(aa, ab), "Different annotated types")
-			case (sa: Structure, sb: Structure) => debug(sameStructure(sa, sb), "Different structure type")
+			case (sa: Structure, sb: Structure) => debug(sameStructureDirect(sa, sb), "Different structure type")
 			case (ea: Existential, eb: Existential) => debug(sameExistentialType(ea, eb), "Different existential type")
 			case (pa: Polymorphic, pb: Polymorphic) => debug(samePolymorphicType(pa, pb), "Different polymorphic type")
 			case _ => differentCategory("type", a, b)
@@ -332,18 +336,23 @@ class SameAPI(tagsA: TypeVars, tagsB: TypeVars, includePrivate: Boolean, include
 		sameAnnotations(a.annotations, b.annotations)
 	def sameStructure(a: Structure, b: Structure): Boolean =
 		samePending(a,b)(sameStructureDirect)
+
 	private[this] def samePending[T](a: T, b: T)(f: (T,T) => Boolean): Boolean =
 		if(pending add ((a,b)) ) f(a,b) else true
 
 	def sameStructureDirect(a: Structure, b: Structure): Boolean =
+	{
 		sameSeq(a.parents, b.parents)(sameType) &&
 		sameMembers(a.declared, b.declared) &&
 		sameMembers(a.inherited, b.inherited)
+	}
 
 	def sameMembers(a: Seq[Definition], b: Seq[Definition]): Boolean =
 		sameDefinitions(a, b, false)
 
 	def sameSimpleType(a: SimpleType, b: SimpleType): Boolean =
+		samePending(a,b)(sameSimpleTypeDirect)
+	def sameSimpleTypeDirect(a: SimpleType, b: SimpleType): Boolean =
 		(a, b) match
 		{
 			case (pa: Projection, pb: Projection) => debug(sameProjection(pa, pb), "Different projection")

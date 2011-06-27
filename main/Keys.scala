@@ -115,7 +115,7 @@ object Keys
 
 	val clean = TaskKey[Unit]("clean", "Deletes files produced by the build, such as generated sources, compiled classes, and task caches.")
 	val console = TaskKey[Unit]("console", "Starts the Scala interpreter with the project classes on the classpath.")
-	val consoleQuick = TaskKey[Unit]("console-quick", "Starts the Scala interpreter with the project dependencies on the classpath.")
+	val consoleQuick = TaskKey[Unit]("console-quick", "Starts the Scala interpreter with the project dependencies on the classpath.", console)
 	val consoleProject = TaskKey[Unit]("console-project", "Starts the Scala interpreter with the sbt and the build definition on the classpath and useful imports.")
 	val compile = TaskKey[Analysis]("compile", "Compiles sources.")
 	val compilers = TaskKey[Compiler.Compilers]("compilers", "Defines the Scala and Java compilers to use for compilation.")
@@ -143,6 +143,7 @@ object Keys
 	val runMain = InputKey[Unit]("run-main", "Runs the main class selected by the first argument, passing the remaining arguments to the main method.")
 	val discoveredMainClasses = TaskKey[Seq[String]]("discovered-main-classes", "Auto-detects main classes.")
 	val runner = SettingKey[ScalaRun]("runner", "Implementation used to run a main class.")
+	val trapExit = SettingKey[Boolean]("trap-exit", "If true, enables exit trapping and thread management for 'run'-like tasks.  This is currently only suitable for serially-executed 'run'-like tasks.")
 
 	val fork = SettingKey[Boolean]("fork", "If true, forks a new JVM when running.  If false, runs in the same JVM as the build.")
 	val outputStrategy = SettingKey[Option[sbt.OutputStrategy]]("output-strategy", "Selects how to log output when running a main class.")
@@ -170,7 +171,10 @@ object Keys
 	val defaultConfiguration = SettingKey[Option[Configuration]]("default-configuration", "Defines the configuration used when none is specified for a dependency.")
 	val defaultConfigurationMapping = SettingKey[String]("default-configuration-mapping", "Defines the mapping used for a simple, unmapped configuration definition.")
 
-	val products = TaskKey[Classpath]("products", "Build products that go on the exported classpath.")
+	val products = TaskKey[Seq[File]]("products", "Build products that get packaged.")
+	val productDirectories = TaskKey[Seq[File]]("product-directories", "Base directories of build products.")
+	val exportJars = SettingKey[Boolean]("export-jars", "Determines whether the exported classpath for this project contains classes (false) or a packaged jar (true).")
+	val exportedProducts = TaskKey[Classpath]("exported-products", "Build products that go on the exported classpath.")
 	val unmanagedClasspath = TaskKey[Classpath]("unmanaged-classpath", "Classpath entries (deep) that are manually managed.")
 	val unmanagedJars = TaskKey[Classpath]("unmanaged-jars", "Classpath entries for the current project (shallow) that are manually managed.")
 	val managedClasspath = TaskKey[Classpath]("managed-classpath", "The classpath consisting of external, managed library dependencies.")
@@ -216,6 +220,7 @@ object Keys
 	val moduleID = SettingKey[String]("module-id", "The name of the current module, used for dependency management.")
 	val version = SettingKey[String]("version", "The version/revision of the current module.")
 	val projectID = SettingKey[ModuleID]("project-id", "The dependency management descriptor for the current module.")
+	val externalResolvers = TaskKey[Seq[Resolver]]("external-resolvers", "The external resolvers for automatically managed dependencies.")
 	val resolvers = SettingKey[Seq[Resolver]]("resolvers", "The user-defined additional resolvers for automatically managed dependencies.")
 	val projectResolver = TaskKey[Resolver]("project-resolver", "Resolver that handles inter-project dependencies.")
 	val fullResolvers = TaskKey[Seq[Resolver]]("full-resolvers", "Combines the project resolver, default resolvers, and user-defined resolvers.")
@@ -243,10 +248,13 @@ object Keys
 	val packagedArtifact = TaskKey[(Artifact, File)]("packaged-artifact", "Generates a packaged artifact, returning the Artifact and the produced File.")
 	val checksums = SettingKey[Seq[String]]("checksums", "The list of checksums to generate and to verify for dependencies.")
 
+	val autoScalaLibrary = SettingKey[Boolean]("auto-scala-library", "Adds a dependency on scala-library if true.")
 	val sbtResolver = SettingKey[Resolver]("sbt-resolver", "Provides a resolver for obtaining sbt as a dependency.")
 	val sbtDependency = SettingKey[ModuleID]("sbt-dependency", "Provides a definition for declaring the current version of sbt.")
+	val sbtVersion = SettingKey[String]("sbt-version", "Provides the version of sbt.  This setting should be not be modified.")
 
 	// special
+	val parallelExecution = SettingKey[Boolean]("parallel-execution", "Enables (true) or disables (false) parallel execution of tasks.")
 	val settings = TaskKey[Settings[Scope]]("settings", "Provides access to the project data for the build.")
 	val streams = TaskKey[TaskStreams]("streams", "Provides streams for logging and persisting data.")
 	val isDummyTask = AttributeKey[Boolean]("is-dummy-task", "Internal: used to identify dummy tasks.  sbt injects values for these tasks at the start of task execution.")
@@ -262,7 +270,7 @@ object Keys
 	type Streams = std.Streams[ScopedKey[_]]
 	type TaskStreams = std.TaskStreams[ScopedKey[_]]
 
-	def dummy[T](name: String, description: String): (TaskKey[T], Task[T]) = (TaskKey[T](name, description), dummyTask(name))
+	def dummy[T: Manifest](name: String, description: String): (TaskKey[T], Task[T]) = (TaskKey[T](name, description), dummyTask(name))
 	def dummyTask[T](name: String): Task[T] =
 	{
 		val base: Task[T] = task( error("Dummy task '" + name + "' did not get converted to a full task.") ) named name

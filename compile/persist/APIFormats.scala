@@ -47,8 +47,8 @@ trait APIFormats extends FormatExtra
 		wrap[Id, String](_.id, i => new Id(i))(s)
 	implicit val formatThis: Format[This] = asSingleton(new This)
 
-	implicit def formatSource(implicit pa: Format[Array[Package]], da: Format[Array[Definition]]): Format[Source] =
-		p2( (s: Source) => (s.packages, s.definitions))( (p, d) => new Source(p, d) )(pa, da)
+	implicit def formatSource(implicit pa: Format[Array[Package]], da: Format[Array[Definition]]): Format[SourceAPI] =
+		p2( (s: SourceAPI) => (s.packages, s.definitions))( (p, d) => new SourceAPI(p, d) )(pa, da)
 
 	implicit def formatAnnotated(implicit t: Format[SimpleType], as: Format[Array[Annotation]]): Format[Annotated] =
 		p2( (a: Annotated) => (a.baseType,a.annotations))(new Annotated(_,_))(t,as)
@@ -106,7 +106,7 @@ trait APIFormats extends FormatExtra
 		p7( (td: TypeDeclaration) => (td.lowerBound, td.upperBound, td.typeParameters, td.name, td.access, td.modifiers, td.annotations))( new TypeDeclaration(_,_,_,_,_,_,_))(t,t,tps,n,acs,ms,ans)
 
 	// cyclic with SimpleType
-	def formatAnnotation(implicit t: Format[SimpleType], af: Format[Array[AnnotationArgument]]): Format[Annotation] =
+	def formatAnnotation(implicit t: Format[Type], af: Format[Array[AnnotationArgument]]): Format[Annotation] =
 		p2( (a: Annotation) => (a.base, a.arguments) )( (a,b) => new Annotation(a,b) )(t, af)
 		
 	implicit def formatAnnotationArgument(implicit sf: Format[String]): Format[AnnotationArgument] =
@@ -212,9 +212,9 @@ class DefaultAPIFormats(implicit val references: References) extends APIFormats
 	implicit lazy val df: Format[Definition] = lazyFormat( formatDefinition )
 
 	// Projection, Annotation, and Parameterized are cyclic with SimpleType
-	//  Parameterized is also cyclic with Type
+	//  Parameterized and Annotation are also cyclic with Type
 	implicit lazy val projf: Format[Projection] = formatProjection(stf, ??)
-	implicit lazy val af: Format[Annotation] = formatAnnotation(stf, ??)
+	implicit lazy val af: Format[Annotation] = formatAnnotation(tf, ??)
 	implicit lazy val paramf: Format[Parameterized] = formatParameterized(stf, array(tf))
 	implicit lazy val constf: Format[ConstantType] = formatConstantType(stf)
 
@@ -222,7 +222,7 @@ class DefaultAPIFormats(implicit val references: References) extends APIFormats
 	implicit lazy val sf: Format[Super] = lazyFormat(formatSuper(pathf))
 	implicit lazy val pathf: Format[Path] = formatPath
 
-	implicit val srcFormat: Format[Source] = formatSource(??, array(df))
+	implicit val srcFormat: Format[SourceAPI] = formatSource(??, array(df))
 
 	private[this] def array[T](format: Format[T])(implicit mf: Manifest[T]): Format[Array[T]] = arrayFormat(format, mf)
 }

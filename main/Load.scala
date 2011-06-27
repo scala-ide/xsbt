@@ -31,12 +31,12 @@ object Load
 		val base = baseDirectory.getCanonicalFile
 		val loader = getClass.getClassLoader
 		val classpath = provider.mainClasspath ++ scalaProvider.jars
-		val compilers = Compiler.compilers(state.configuration, log)
+		val compilers = Compiler.compilers(ClasspathOptions.boot)(state.configuration, log)
 		val evalPluginDef = EvaluateTask.evalPluginDef(log) _
 		val delegates = defaultDelegates
 		val inject: Seq[Project.Setting[_]] = ((appConfiguration in GlobalScope) :== state.configuration) +: EvaluateTask.injectSettings
 		val rawConfig = new LoadBuildConfiguration(stagingDirectory, Nil, classpath, loader, compilers, evalPluginDef, delegates, EvaluateTask.injectStreams, inject, log)
-		val commonPlugins = buildGlobalPlugins(defaultGlobalPlugins, state, rawConfig)
+		val commonPlugins = if(baseDirectory == defaultGlobalPlugins) Nil else buildGlobalPlugins(defaultGlobalPlugins, state, rawConfig)
 		val config = rawConfig.copy(commonPluginClasspath = commonPlugins)
 		apply(base, state, config)
 	}
@@ -52,7 +52,7 @@ object Load
 			rootProject,
 			project => projectInherit(lb, project),
 			(project, config) => configInherit(lb, project, config, rootProject),
-			(project, task) => Nil,
+			task => task.extend,
 			(project, extra) => Nil
 		)
 	}
@@ -291,7 +291,7 @@ object Load
 		//  Therefore, we use resolveProjectBuild instead of resolveProjectRef.  After all builds are loaded, we can fully resolve ProjectReferences.
 		val resolveBuild = (_: Project).resolveBuild(ref => Scope.resolveProjectBuild(unit.uri, ref))
 		val resolve = resolveBuild compose resolveBase(unit.localBase)
-		unit.definitions.builds.flatMap(_.projects map resolve)
+		unit.definitions.builds.flatMap(_.projectDefinitions(unit.localBase) map resolve)
 	}
 	def getRootProject(map: Map[URI, BuildUnitBase]): URI => String =
 		uri => getBuild(map, uri).rootProjects.headOption getOrElse emptyBuild(uri)
@@ -322,7 +322,7 @@ object Load
 		IO.createDirectory(target)
 		val loadedDefs =
 			if(defs.isEmpty)
-				new LoadedDefinitions(defDir, target, plugs.loader, Build.default(normBase) :: Nil, Nil)
+				new LoadedDefinitions(defDir, target, plugs.loader, Build.default :: Nil, Nil)
 			else
 				definitions(defDir, target, defs, plugs, config.compilers, config.log, normBase)
 
@@ -354,7 +354,7 @@ object Load
 		val target = inputs.config.classesDirectory
 		val definitionLoader = ClasspathUtilities.toLoader(target :: Nil, plugins.loader)
 		val defNames = findDefinitions(defAnalysis)
-		val defs = if(defNames.isEmpty) Build.default(buildBase) :: Nil else loadDefinitions(definitionLoader, defNames)
+		val defs = if(defNames.isEmpty) Build.default :: Nil else loadDefinitions(definitionLoader, defNames)
 		new LoadedDefinitions(base, target, definitionLoader, defs, defNames)
 	}
 
