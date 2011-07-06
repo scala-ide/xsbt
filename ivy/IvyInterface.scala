@@ -41,7 +41,9 @@ sealed trait Resolver
 final class RawRepository(val resolver: DependencyResolver) extends Resolver
 {
 	def name = resolver.getName
+	override def toString = "Raw(" + resolver.toString + ")"
 }
+sealed case class ChainedResolver(name: String, resolvers: Seq[Resolver]) extends Resolver
 sealed case class MavenRepository(name: String, root: String) extends Resolver
 {
 	override def toString = name + ": " + root
@@ -290,8 +292,10 @@ object Configurations
 {
 	def config(name: String) = new Configuration(name)
 	def default: Seq[Configuration] = defaultMavenConfigurations
-	def defaultMavenConfigurations: Seq[Configuration] = Compile :: Runtime :: Test :: Provided :: Optional :: Nil
-	def defaultInternal: Seq[Configuration] = CompileInternal :: RuntimeInternal :: TestInternal :: Nil
+	def defaultMavenConfigurations: Seq[Configuration] = Seq(Compile, Runtime, Test, Provided, Optional)
+	def defaultInternal: Seq[Configuration] = Seq(CompileInternal, RuntimeInternal, TestInternal)
+	def auxiliary: Seq[Configuration] = Seq(Sources, Docs, Pom)
+	def names(cs: Seq[Configuration]) = cs.map(_.name)
 
 	lazy val RuntimeInternal = optionalInternal(Runtime)
 	lazy val TestInternal = fullInternal(Test)
@@ -312,14 +316,15 @@ object Configurations
 
 	lazy val Default = config("default")
 	lazy val Compile = config("compile")
-	lazy val IntegrationTest = config("it") extend(Runtime);
-	lazy val Provided = config("provided")
-	lazy val Javadoc = config("javadoc")
+	lazy val IntegrationTest = config("it") extend(Runtime)
+	lazy val Provided = config("provided") ;
+	lazy val Docs = config("docs")
 	lazy val Runtime = config("runtime") extend(Compile)
-	lazy val Test = config("test") extend(Runtime);
+	lazy val Test = config("test") extend(Runtime)
 	lazy val Sources = config("sources")
 	lazy val System = config("system")
 	lazy val Optional = config("optional")
+	lazy val Pom = config("pom")
 
 	lazy val CompilerPlugin = config("plugin") hide
 
@@ -347,6 +352,9 @@ final case class Artifact(name: String, `type`: String, extension: String, class
 {
 	def extra(attributes: (String,String)*) = Artifact(name, `type`, extension, classifier, configurations, url, extraAttributes ++ ModuleID.checkE(attributes))
 }
+
+		import Configurations.{config, Docs, Optional, Pom, Sources}
+
 object Artifact
 {
 	def apply(name: String): Artifact = Artifact(name, defaultType, defaultExtension, None, Nil, None)
@@ -357,10 +365,18 @@ object Artifact
 	def apply(name: String, url: URL): Artifact =Artifact(name, extract(url, defaultType), extract(url, defaultExtension), None, Nil, Some(url))
 	def apply(name: String, `type`: String, extension: String, classifier: Option[String], configurations: Iterable[Configuration], url: Option[URL]): Artifact =
 		Artifact(name, `type`, extension, classifier, configurations, url, Map.empty)
+
 	val defaultExtension = "jar"
 	val defaultType = "jar"
-	def sources(name: String) = Artifact(name, "src", "jar", "sources")
-	def javadoc(name: String) = Artifact(name, "doc", "jar", "javadoc")
+
+	def sources(name: String) = classified(name, SourceClassifier)
+	def javadoc(name: String) = classified(name, DocClassifier)
+	def pom(name: String) =  Artifact(name, PomType, PomType, None, Pom :: Nil, None)
+
+	val DocClassifier = "javadoc"
+	val SourceClassifier = "sources"
+	val PomType = "pom"
+
 	def extract(url: URL, default: String): String = extract(url.toString, default)
 	def extract(name: String, default: String): String =
 	{
@@ -385,6 +401,13 @@ object Artifact
 		base + "-" + module.revision + classifierStr + "." + artifact.extension
 	}
 	def cross(enable: Boolean, scalaVersion: String): String = if(enable) "_" + scalaVersion else ""
+
+	val classifierConfMap = Map(SourceClassifier -> Sources, DocClassifier -> Docs)
+	val classifierTypeMap = Map(SourceClassifier -> "src", DocClassifier -> "doc")
+	def classifierConf(classifier: String): Configuration = classifierConfMap.getOrElse(classifier, Optional)	
+	def classifierType(classifier: String): String = classifierTypeMap.getOrElse(classifier, defaultType)
+	def classified(name: String, classifier: String): Artifact =
+		Artifact(name, classifierType(classifier), defaultExtension, Some(classifier), classifierConf(classifier) :: Nil, None)
 }
 final case class ModuleConfiguration(organization: String, name: String, revision: String, resolver: Resolver)
 object ModuleConfiguration

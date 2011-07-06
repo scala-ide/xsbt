@@ -68,7 +68,7 @@ final class IvySbt(val configuration: IvyConfiguration)
 				i.paths.ivyHome foreach is.setDefaultIvyUserDir
 				IvySbt.configureCache(is, i.localOnly)
 				IvySbt.setResolvers(is, i.resolvers, i.otherResolvers, i.localOnly, configuration.log)
-				IvySbt.setModuleConfigurations(is, i.moduleConfigurations)
+				IvySbt.setModuleConfigurations(is, i.moduleConfigurations, configuration.log)
 		}
 		is
 	}
@@ -142,7 +142,7 @@ final class IvySbt(val configuration: IvyConfiguration)
 		{
 			val mod = new DefaultModuleDescriptor(IvySbt.toID(module), "release", null, false)
 			mod.setLastModified(System.currentTimeMillis)
-			configurations.foreach(config => mod.addConfiguration(IvySbt.toIvyConfiguration(config)))
+			IvySbt.addConfigurations(mod, configurations)
 			IvySbt.addArtifacts(mod, module.explicitArtifacts)
 			mod
 		}
@@ -151,7 +151,9 @@ final class IvySbt(val configuration: IvyConfiguration)
 		private def readPom(pomFile: File, validate: Boolean) =
 		{
 			val md = PomModuleDescriptorParser.getInstance.parseDescriptor(settings, toURL(pomFile), validate)
-			(IvySbt.toDefaultModuleDescriptor(md), "compile")
+			val dmd = IvySbt.toDefaultModuleDescriptor(md)
+			IvySbt.addConfigurations(dmd, Configurations.defaultInternal)
+			(dmd, "compile")
 		}
 		/** Parses the given Ivy file 'ivyFile'.*/
 		private def readIvyFile(ivyFile: File, validate: Boolean) =
@@ -203,7 +205,7 @@ private object IvySbt
 		val mainChain = makeChain("Default", "sbt-chain", resolvers)
 		settings.setDefaultResolver(mainChain.getName)
 	}
-	private def resolverChain(name: String, resolvers: Seq[Resolver], localOnly: Boolean, settings: IvySettings, log: Logger): DependencyResolver =
+	def resolverChain(name: String, resolvers: Seq[Resolver], localOnly: Boolean, settings: IvySettings, log: Logger): DependencyResolver =
 	{
 		val newDefault = new ChainResolver {
 			// Technically, this should be applied to module configurations.
@@ -217,7 +219,7 @@ private object IvySbt
 		newDefault.setCheckmodified(false)
 		for(sbtResolver <- resolvers) {
 			log.debug("\t" + sbtResolver)
-			newDefault.add(ConvertResolver(sbtResolver)(settings))
+			newDefault.add(ConvertResolver(sbtResolver)(settings, log))
 		}
 		newDefault
 	}
@@ -229,7 +231,7 @@ private object IvySbt
 		import collection.JavaConversions._
 		artifact.getQualifiedExtraAttributes.keys.exists(_.asInstanceOf[String] startsWith "m:")
 	}
-	private def setModuleConfigurations(settings: IvySettings, moduleConfigurations: Seq[ModuleConfiguration])
+	private def setModuleConfigurations(settings: IvySettings, moduleConfigurations: Seq[ModuleConfiguration], log: Logger)
 	{
 		val existing = settings.getResolverNames
 		for(moduleConf <- moduleConfigurations)
@@ -238,7 +240,7 @@ private object IvySbt
 			import IvyPatternHelper._
 			import PatternMatcher._
 			if(!existing.contains(resolver.name))
-				settings.addResolver(ConvertResolver(resolver)(settings))
+				settings.addResolver(ConvertResolver(resolver)(settings, log))
 			val attributes = javaMap(Map(MODULE_KEY -> name, ORGANISATION_KEY -> organization, REVISION_KEY -> revision))
 			settings.addModuleConfiguration(attributes, settings.getMatcher(EXACT_OR_REGEXP), resolver.name, null, null, null)
 		}
@@ -408,6 +410,8 @@ private object IvySbt
 	def addArtifacts(moduleID: DefaultModuleDescriptor, artifacts: Iterable[Artifact]): Unit =
 		for(art <- mapArtifacts(moduleID, artifacts.toSeq); c <- art.getConfigurations)
 			moduleID.addArtifact(c, art)
+	def addConfigurations(mod: DefaultModuleDescriptor, configurations: Iterable[Configuration]): Unit =
+			configurations.foreach(config => mod.addConfiguration(toIvyConfiguration(config)))
 
 	def mapArtifacts(moduleID: ModuleDescriptor, artifacts: Seq[Artifact]): Seq[IArtifact] =
 	{

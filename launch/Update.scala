@@ -22,7 +22,8 @@ import core.sort.SortEngine
 import core.settings.IvySettings
 import plugins.matcher.{ExactPatternMatcher, PatternMatcher}
 import plugins.resolver.{ChainResolver, FileSystemResolver, IBiblioResolver, URLResolver}
-import util.{DefaultMessageLogger, Message, MessageLoggerEngine, url}
+import util.{DefaultMessageLogger, filter, Message, MessageLoggerEngine, url}
+import filter.Filter
 import url.CredentialsStore
 
 import BootConfiguration._
@@ -109,6 +110,7 @@ final class Update(config: UpdateConfiguration)
 			case u: UpdateScala =>
 				addDependency(moduleID, ScalaOrg, CompilerModuleName, scalaVersion, "default;optional(default)", u.classifiers)
 				addDependency(moduleID, ScalaOrg, LibraryModuleName, scalaVersion, "default", u.classifiers)
+				excludeJUnit(moduleID)
 				System.out.println("Getting Scala " + scalaVersion + " " + reason + "...")
 			case u: UpdateApp =>
 				val app = u.id
@@ -147,6 +149,7 @@ final class Update(config: UpdateConfiguration)
 		for(conf <- dep.getModuleConfigurations)
 			dep.addDependencyArtifact(conf, ivyArtifact)
 	}
+	private def excludeJUnit(module: DefaultModuleDescriptor): Unit = module.addExcludeRule(excludeRule(JUnitName, JUnitName))
 	private def excludeScala(module: DefaultModuleDescriptor)
 	{
 		def excludeScalaJar(name: String): Unit = module.addExcludeRule(excludeRule(ScalaOrg, name))
@@ -187,10 +190,14 @@ final class Update(config: UpdateConfiguration)
 				problem.printStackTrace(logWriter)
         }
 	}
+	private final class ArtifactFilter(f: IArtifact => Boolean) extends Filter {
+		def accept(o: Any) = o match { case a: IArtifact => f(a); case _ => false }
+	}
 	/** Retrieves resolved dependencies using the given target to determine the location to retrieve to. */
 	private def retrieve(eventManager: EventManager, module: ModuleDescriptor,  target: UpdateTarget)
 	{
 		val retrieveOptions = new RetrieveOptions
+		retrieveOptions.setArtifactFilter(new ArtifactFilter(a => "jar" == a.getType && a.getExtraAttribute("classifier") == null))
 		val retrieveEngine = new RetrieveEngine(settings, eventManager)
 		val pattern =
 			target match
@@ -243,7 +250,7 @@ final class Update(config: UpdateConfiguration)
 		repo match
 		{
 			case Maven(id, url) => mavenResolver(id, url.toString)
-			case Ivy(id, url, pattern) => urlResolver(id, url.toString, pattern)
+			case Ivy(id, url, ivyPattern, artifactPattern) => urlResolver(id, url.toString, ivyPattern, artifactPattern)
 			case Predefined(Local) => localResolver(settings.getDefaultIvyUserDir.getAbsolutePath)
 			case Predefined(MavenLocal) => mavenLocal
 			case Predefined(MavenCentral) => mavenMainResolver
@@ -260,15 +267,16 @@ final class Update(config: UpdateConfiguration)
 		}
 	}
 	/** Uses the pattern defined in BuildConfiguration to download sbt from Google code.*/
-	private def urlResolver(id: String, base: String, pattern: String) =
+	private def urlResolver(id: String, base: String, ivyPattern: String, artifactPattern: String) =
 	{
 		val resolver = new URLResolver
 		resolver.setName(id)
-		val adjusted = (if(base.endsWith("/")) base else (base + "/") ) + pattern
-		resolver.addIvyPattern(adjusted)
-		resolver.addArtifactPattern(adjusted)
+		resolver.addIvyPattern(adjustPattern(base, ivyPattern))
+		resolver.addArtifactPattern(adjustPattern(base, artifactPattern))
 		resolver
 	}
+	private def adjustPattern(base: String, pattern: String): String =
+		(if(base.endsWith("/") || base.isEmpty) base else (base + "/") ) + pattern
 	private def mavenLocal = mavenResolver("Maven2 Local", "file://" + System.getProperty("user.home") + "/.m2/repository/")
 	/** Creates a maven-style resolver.*/
 	private def mavenResolver(name: String, root: String) =

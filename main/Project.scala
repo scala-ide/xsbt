@@ -24,11 +24,12 @@ sealed trait ProjectDefinition[PR <: ProjectReference]
 	def uses: Seq[PR] = aggregate ++ dependencies.map(_.project)
 	def referenced: Seq[PR] = delegates ++ uses
 
-	override final def hashCode = id.hashCode
+	override final def hashCode: Int = id.hashCode ^ base.hashCode ^ getClass.hashCode
 	override final def equals(o: Any) = o match {
-		case p: ProjectDefinition[_] => p.getClass == this.getClass && p.id == id
+		case p: ProjectDefinition[_] => p.getClass == this.getClass && p.id == id && p.base == base
 		case _ => false
 	}
+	override def toString = "Project(id: " + id + ", base: " + base + ", aggregate: " + aggregate + ", dependencies: " + dependencies + ", delegates: " + delegates + ", configurations: " + configurations + ")"
 }
 sealed trait Project extends ProjectDefinition[ProjectReference]
 {
@@ -82,6 +83,13 @@ final case class Extracted(structure: BuildStructure, session: SessionSettings, 
 		value getOrElse error(Project.display(ScopedKey(scope, key)) + " is undefined.")
 	private def getOrError[T](scope: Scope, key: AttributeKey[T]): T =
 		structure.data.get(scope, key) getOrElse error(Project.display(ScopedKey(scope, key)) + " is undefined.")
+
+	def append(settings: Seq[Setting[_]], state: State): State =
+	{
+		val appendSettings = Load.transformSettings(Load.projectScope(currentRef), currentRef.build, rootProject, settings)
+		val newStructure = Load.reapply(session.original ++ appendSettings, structure)
+		Project.setProject(session, newStructure, state)
+	}
 }
 
 sealed trait ClasspathDep[PR <: ProjectReference] { def project: PR; def configuration: Option[String] }
@@ -91,17 +99,18 @@ final case class ClasspathDependency(project: ProjectReference, configuration: O
 object Project extends Init[Scope] with ProjectExtra
 {
 	private abstract class ProjectDef[PR <: ProjectReference](val id: String, val base: File, aggregate0: => Seq[PR], dependencies0: => Seq[ClasspathDep[PR]], delegates0: => Seq[PR],
-		val settings: Seq[Setting[_]], val configurations: Seq[Configuration]) extends ProjectDefinition[PR]
+		settings0: => Seq[Setting[_]], val configurations: Seq[Configuration]) extends ProjectDefinition[PR]
 	{
 		lazy val aggregate = aggregate0
 		lazy val dependencies = dependencies0
 		lazy val delegates = delegates0
+		lazy val settings = settings0
 	
 		Dag.topologicalSort(configurations)(_.extendsConfigs) // checks for cyclic references here instead of having to do it in Scope.delegates
 	}
 
 	def apply(id: String, base: File, aggregate: => Seq[ProjectReference] = Nil, dependencies: => Seq[ClasspathDep[ProjectReference]] = Nil, delegates: => Seq[ProjectReference] = Nil,
-		settings: Seq[Setting[_]] = defaultSettings, configurations: Seq[Configuration] = Configurations.default): Project =
+		settings: => Seq[Setting[_]] = defaultSettings, configurations: Seq[Configuration] = Configurations.default): Project =
 			new ProjectDef[ProjectReference](id, base, aggregate, dependencies, delegates, settings, configurations) with Project
 
 	def resolved(id: String, base: File, aggregate: => Seq[ProjectRef], dependencies: => Seq[ResolvedClasspathDependency], delegates: => Seq[ProjectRef],
@@ -128,6 +137,7 @@ object Project extends Init[Scope] with ProjectExtra
 
 	def setProject(session: SessionSettings, structure: BuildStructure, s: State): State =
 	{
+		SessionSettings.checkSession(session, s)
 		val previousOnUnload = orIdentity(s get Keys.onUnload.key)
 		val unloaded = previousOnUnload(s.runExitHooks())
 		val (onLoad, onUnload) = getHooks(structure.data)
@@ -143,8 +153,8 @@ object Project extends Init[Scope] with ProjectExtra
 	def updateCurrent(s0: State): State =
 	{
 		val structure = Project.structure(s0)
-		val s = installGlobalLogger(s0, structure)
-		val ref = Project.current(s)
+		val ref = Project.current(s0)
+		val s = installGlobalLogger(s0, structure, ref)
 		val project = Load.getProject(structure.units, ref.build, ref.project)
 		logger(s).info("Set current project to " + ref.project + " (in build " + ref.build +")")
 		def get[T](k: SettingKey[T]): Option[T] = k in ref get structure.data
@@ -174,14 +184,15 @@ object Project extends Init[Scope] with ProjectExtra
 	def display(ref: BuildReference) =
 		ref match
 		{
-			case ThisBuild => "<this>"
+			case ThisBuild => "{<this>}"
 			case BuildRef(uri) => "{" + uri + "}"
 		}
 	def display(ref: ProjectReference) =
 		ref match
 		{
-			case ThisProject => "(<this>)<this>"
-			case LocalProject(id) => "(<this>)" + id
+			case ThisProject => "{<this>}<this>"
+			case LocalRootProject => "{<this>}<root>"
+			case LocalProject(id) => "{<this>}" + id
 			case RootProject(uri) => "{" + uri + " }<root>"
 			case ProjectRef(uri, id) => "{" + uri + "}" + id
 		}
@@ -210,13 +221,21 @@ object Project extends Init[Scope] with ProjectExtra
 	def details(structure: BuildStructure, actual: Boolean, scope: Scope, key: AttributeKey[_]): String =
 	{
 		val scoped = ScopedKey(scope,key)
-		val value = 
-			structure.data.get(scope, key) match {
+		lazy val clazz = key.manifest.erasure
+		lazy val firstType = key.manifest.typeArguments.head
+		val value =
+			structure.data.get(scope, key) match
+			{
 				case None => "No entry for key."
-				case Some(v: Task[_]) => "Task"
-				case Some(v: InputTask[_]) => "Input task"
-				case Some(v) => "Value:\n\t" + v.toString
+				case Some(v) =>
+					if(clazz == classOf[Task[_]])
+						"Task: " + firstType.toString
+					else if(clazz == classOf[InputTask[_]])
+						"Input task: " + firstType.toString
+					else
+						"Setting: " + key.manifest.toString + " = " + v.toString
 			}
+
 		val description = key.description match { case Some(desc) => "Description:\n\t" + desc + "\n"; case None => "" }
 		val definedIn = structure.data.definingScope(scope, key) match {
 			case Some(sc) => "Provided by:\n\t" + Scope.display(sc, key.label) + "\n"
@@ -290,10 +309,10 @@ object Project extends Init[Scope] with ProjectExtra
 		val extracted = Project.extract(state)
 		EvaluateTask.evaluateTask(extracted.structure, taskKey, state, extracted.currentRef, checkCycles, maxWorkers)
 	}
-	def globalLoggerKey = fillTaskAxis(ScopedKey(GlobalScope, streams.key))
-	def installGlobalLogger(s: State, structure: BuildStructure): State =
+	def globalLoggerKey(ref: ScopeAxis[ResolvedReference]) = fillTaskAxis(ScopedKey(GlobalScope.copy(project = ref), streams.key))
+	def installGlobalLogger(s: State, structure: BuildStructure, ref: ProjectRef): State =
 	{
-		val str = structure.streams(globalLoggerKey)
+		val str = structure.streams(globalLoggerKey(Select(ref)))
 		str.open()
 		s.put(logged, str.log).addExitHook { str.close() }
 	}

@@ -7,6 +7,7 @@ package sbt
 	import Project.ScopedKey
 	import complete._
 	import inc.Analysis
+	import inc.Locate.DefinesClass
 	import std.TaskExtra._
 	import scala.xml.{Node => XNode, NodeSeq}
 	import org.apache.ivy.core.module.{descriptor, id}
@@ -26,6 +27,7 @@ object Keys
 	val showSuccess = SettingKey[Boolean]("show-success", "If true, displays a success message after running a command successfully.")
 	val showTiming = SettingKey[Boolean]("show-timing", "If true, the command success message includes the completion time.")
 	val timingFormat = SettingKey[java.text.DateFormat]("timing-format", "The format used for displaying the completion time.")
+	val extraLoggers = SettingKey[ScopedKey[_] => Seq[AbstractLogger]]("extra-loggers", "A function that provides additional loggers for a given setting.")
 	val logManager = SettingKey[LogManager]("log-manager", "The log manager, which creates Loggers for different contexts.")
 	val logBuffered = SettingKey[Boolean]("log-buffered", "True if logging should be buffered until work completes.")
 
@@ -119,6 +121,8 @@ object Keys
 	val consoleProject = TaskKey[Unit]("console-project", "Starts the Scala interpreter with the sbt and the build definition on the classpath and useful imports.")
 	val compile = TaskKey[Analysis]("compile", "Compiles sources.")
 	val compilers = TaskKey[Compiler.Compilers]("compilers", "Defines the Scala and Java compilers to use for compilation.")
+	val compileIncSetup = TaskKey[Compiler.IncSetup]("inc-compile-setup", "Configurations aspects of incremental compilation.")
+	val definesClass = TaskKey[DefinesClass]("defines-class", "Internal use: provides a function that determines whether the provided file contains a given class.")
 	val doc = TaskKey[File]("doc", "Generates API documentation.")
 	val copyResources = TaskKey[Seq[(File,File)]]("copy-resources", "Copies resources to the output directory.")
 	val aggregate = SettingKey[Aggregation]("aggregate", "Configures task aggregation.")
@@ -135,6 +139,7 @@ object Keys
 	val artifactClassifier = SettingKey[Option[String]]("artifact-classifier", "Sets the classifier used by the default artifact definition.")
 	val artifactName = SettingKey[(String, ModuleID, Artifact) => String]("artifact-name", "Function that produces the artifact name from its definition.")
 	val mappings = TaskKey[Seq[(File,String)]]("mappings", "Defines the mappings from a file to a path, used by packaging, for example.")
+	val fileMappings = TaskKey[Seq[(File,File)]]("file-mappings", "Defines the mappings from a file to a file, used for copying files, for example.")
 
 	// Run Keys
 	val selectMainClass = TaskKey[Option[String]]("select-main-class", "Selects the main class to run.")
@@ -188,7 +193,7 @@ object Keys
 	val ivyConfiguration = TaskKey[IvyConfiguration]("ivy-configuration", "General dependency management (Ivy) settings, such as the resolvers and paths to use.")
 	val ivyConfigurations = SettingKey[Seq[Configuration]]("ivy-configurations", "The defined configurations for dependency management.  This may be different from the configurations for Project settings.")
 	val moduleSettings = TaskKey[ModuleSettings]("module-settings", "Module settings, which configure a specific module, such as a project.")
-	val unmanagedBase = SettingKey[File]("unmanaged-base", "The default directory for manually managed directories.")
+	val unmanagedBase = SettingKey[File]("unmanaged-base", "The default directory for manually managed libraries.")
 	val updateConfiguration = SettingKey[UpdateConfiguration]("update-configuration", "Configuration for resolving and retrieving managed dependencies.")
 	val ivySbt = TaskKey[IvySbt]("ivy-sbt", "Provides the sbt interface to Ivy.")
 	val ivyModule = TaskKey[IvySbt#Module]("ivy-module", "Provides the sbt interface to a configured Ivy module.")
@@ -216,9 +221,11 @@ object Keys
 	val pomExtra = SettingKey[NodeSeq]("pom-extra", "Extra XML to insert into the generated POM.")
 	val pomPostProcess = SettingKey[XNode => XNode]("pom-post-process", "Transforms the generated POM.")
 	val pomIncludeRepository = SettingKey[MavenRepository => Boolean]("pom-include-repository", "Selects repositories to include in the generated POM.")
+	val pomAllRepositories = SettingKey[Boolean]("pom-all-repositories", "If true, includes repositories used in module configurations in the pom repositories section.  If false, only the common repositories are included.")
 
-	val moduleID = SettingKey[String]("module-id", "The name of the current module, used for dependency management.")
+	val moduleName = SettingKey[String]("module-name", "The name of the current module, used for dependency management.")
 	val version = SettingKey[String]("version", "The version/revision of the current module.")
+	val moduleID = SettingKey[ModuleID]("module", "A dependency management descriptor.  This is currently used for associating a ModuleID with a classpath entry.")
 	val projectID = SettingKey[ModuleID]("project-id", "The dependency management descriptor for the current module.")
 	val externalResolvers = TaskKey[Seq[Resolver]]("external-resolvers", "The external resolvers for automatically managed dependencies.")
 	val resolvers = SettingKey[Seq[Resolver]]("resolvers", "The user-defined additional resolvers for automatically managed dependencies.")

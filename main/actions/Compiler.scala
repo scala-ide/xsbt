@@ -6,6 +6,7 @@ package sbt
 	import xsbti.{Logger => _,_}
 	import compiler._
 	import inc._
+	import Locate.DefinesClass
 	import java.io.File
 
 object Compiler
@@ -24,22 +25,23 @@ object Compiler
 
 	final case class Inputs(compilers: Compilers, config: Options, incSetup: IncSetup)
 	final case class Options(classpath: Seq[File], sources: Seq[File], classesDirectory: File, options: Seq[String], javacOptions: Seq[String], maxErrors: Int, order: CompileOrder.Value)
-	final case class IncSetup(analysisMap: Map[File, Analysis], cacheDirectory: File)
+	final case class IncSetup(analysisMap: Map[File, Analysis], definesClass: DefinesClass, cacheDirectory: File)
 	final case class Compilers(scalac: AnalyzingCompiler, javac: JavaCompiler)
 
-	def inputs(classpath: Seq[File], sources: Seq[File], outputDirectory: File, options: Seq[String], javacOptions: Seq[String], maxErrors: Int, order: CompileOrder.Value)(implicit compilers: Compilers, log: Logger): Inputs =
+	def inputs(classpath: Seq[File], sources: Seq[File], outputDirectory: File, options: Seq[String], javacOptions: Seq[String], definesClass: DefinesClass, maxErrors: Int, order: CompileOrder.Value)(implicit compilers: Compilers, log: Logger): Inputs =
 	{
 			import Path._
 		val classesDirectory = outputDirectory / "classes"
 		val cacheDirectory = outputDirectory / "cache"
 		val augClasspath = classesDirectory.asFile +: classpath
-		inputs(augClasspath, sources, classesDirectory, options, javacOptions, Map.empty, cacheDirectory, maxErrors, order)
+		val incSetup = IncSetup(Map.empty, definesClass, cacheDirectory)
+		inputs(augClasspath, sources, classesDirectory, options, javacOptions, maxErrors, order)(compilers, incSetup, log)
 	}
-	def inputs(classpath: Seq[File], sources: Seq[File], classesDirectory: File, options: Seq[String], javacOptions: Seq[String], analysisMap: Map[File, Analysis], cacheDirectory: File, maxErrors: Int, order: CompileOrder.Value)(implicit compilers: Compilers, log: Logger): Inputs =
+	def inputs(classpath: Seq[File], sources: Seq[File], classesDirectory: File, options: Seq[String], javacOptions: Seq[String], maxErrors: Int, order: CompileOrder.Value)(implicit compilers: Compilers, incSetup: IncSetup, log: Logger): Inputs =
 		new Inputs(
 			compilers,
 			new Options(classpath, sources, classesDirectory, options, javacOptions, maxErrors, order),
-			new IncSetup(analysisMap, cacheDirectory)
+			incSetup
 		)
 
 	def compilers(cpOptions: ClasspathOptions)(implicit app: AppConfiguration, log: Logger): Compilers =
@@ -84,7 +86,14 @@ object Compiler
 		val exec = javaHome match { case None => "javac"; case Some(jh) => (jh / "bin" / "javac").absolutePath }
 		(args: Seq[String], log: Logger) => {
 			log.debug("Forking javac: " + exec + " " + args.mkString(" "))
-			Process(exec, args) ! log
+			val javacLogger = new JavacLogger(log)
+			var exitCode = -1
+			try {
+				exitCode = Process(exec, args) ! javacLogger
+			} finally {
+				javacLogger.flush(exitCode)
+			}
+			exitCode
 		}
 	}
 
@@ -93,8 +102,34 @@ object Compiler
 			import in.compilers._
 			import in.config._
 			import in.incSetup._
-		
+
 		val agg = new AggressiveCompile(cacheDirectory)
-		agg(scalac, javac, sources, classpath, classesDirectory, options, javacOptions, analysisMap, maxErrors, order)(log)
+		agg(scalac, javac, sources, classpath, classesDirectory, options, javacOptions, analysisMap, definesClass, maxErrors, order)(log)
 	}
+}
+
+private[sbt] class JavacLogger(log: Logger) extends ProcessLogger {
+  import scala.collection.mutable.ListBuffer
+  import Level.{Info, Warn, Error, Value => LogLevel}
+
+  private val msgs: ListBuffer[(LogLevel, String)] = new ListBuffer()
+
+  def info(s: => String): Unit =
+    synchronized { msgs += ((Info, s)) }
+
+  def error(s: => String): Unit =
+    synchronized { msgs += ((Error, s)) }
+
+  def buffer[T](f: => T): T = f
+
+  private def print(desiredLevel: LogLevel)(t: (LogLevel, String)) = t match {
+    case (Info, msg) => log.info(msg)
+    case (Error, msg) => log.log(desiredLevel, msg)
+  }
+
+  def flush(exitCode: Int): Unit = {
+    val level = if (exitCode == 0) Warn else Error
+    msgs foreach print(level)
+    msgs.clear()
+  }
 }
