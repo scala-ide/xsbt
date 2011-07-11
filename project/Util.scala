@@ -2,6 +2,15 @@
 	import Keys._
 	import StringUtilities.normalize
 
+	
+private object VersionComp {
+	val versionMap = Map(
+	    "scalacheck" -> Map("2.8.1" -> "1.8", "2.9.0-1" -> "1.9"),
+	    "sbinary" -> Map("2.8.1" -> "0.4.0", "2.9.0-1" -> "0.4.0"),
+	    "sxr" -> Map("2.8.1" -> "0.2.7", "2.9.0-1" -> "0.2.7-SNAPSHOT")
+	    )
+}
+
 object Util
 {
 	lazy val componentID = SettingKey[Option[String]]("component-id")
@@ -22,10 +31,18 @@ object Util
 	lazy val javaOnly = Seq[Setting[_]](/*crossPaths := false, */compileOrder := CompileOrder.JavaThenScala, unmanagedSourceDirectories in Compile <<= Seq(javaSource in Compile).join)
 	lazy val base: Seq[Setting[_]] = Seq(scalacOptions ++= Seq("-Xelide-below", "0"), projectComponent) ++ Licensed.settings
 	
-	def testDependencies = libraryDependencies ++= Seq(
+	def testDependencies = (
+	  libraryDependencies <<= (scalaVersion, libraryDependencies) {(sv, deps) =>
+	    val scalaCheck = VersionComp.versionMap("scalacheck").getOrElse(sv, error("Unsupported Scala version " + sv))
+	    deps :+ ("org.scala-tools.testing" % "scalacheck" % scalaCheck % "test")
+	    deps :+ ("org.scala-tools.testing" %% "specs" % "1.6.8" % "test")
+	  }
+	)
+	
+	/*def testDependencies = libraryDependencies ++= Seq(
 		"org.scala-tools.testing" %% "scalacheck" % "1.8" % "test",
 		"org.scala-tools.testing" %% "specs" % "1.6.8" % "test"
-	)
+	)*/
 
 	lazy val minimalSettings: Seq[Setting[_]] = Defaults.paths ++ Seq[Setting[_]](crossTarget <<= target.identity, name <<= thisProject(_.id))
 
@@ -65,6 +82,7 @@ object Util
 		f :: Nil
 	}
 	def binID = "compiler-interface-bin"
+	def binIDshort = "compiler-interface"
 	def srcID = "compiler-interface-src"
 }
 object Common
@@ -75,7 +93,11 @@ object Common
 	lazy val ivy = lib("org.apache.ivy" % "ivy" % "2.2.0")
 	lazy val httpclient = lib("commons-httpclient" % "commons-httpclient" % "3.1")
 	lazy val jsch = lib("com.jcraft" % "jsch" % "0.1.31" intransitive() )
-	lazy val sbinary = lib("org.scala-tools.sbinary" %% "sbinary" % "0.4.0" )
+	lazy val sbinary =
+	  libraryDependencies <<= (scalaVersion, libraryDependencies) {(sv, deps) =>
+	    val sbinaryVersion = VersionComp.versionMap("sbinary").getOrElse(sv, error("Unsupported Scala version " + sv))
+	    deps :+ ("org.scala-tools.sbinary" %% "sbinary" % sbinaryVersion )
+	  }
 	lazy val scalaCompiler = libraryDependencies <+= scalaVersion("org.scala-lang" % "scala-compiler" % _ )
 }
 object Licensed

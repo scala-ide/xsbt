@@ -17,13 +17,20 @@ object Sbt extends Build
 		organization := "org.scala-tools.sbt",
 		version := "0.10.1-SNAPSHOT",
 		publishArtifact in packageDoc := false,
-		scalaVersion := "2.8.1",
-		publishMavenStyle := false,
-		componentID := None
-	)
+		scalaVersion := "2.9.0-1",
+		publishMavenStyle := true,
+		componentID := None	)
+  def localPublishSettings = Seq(
+    otherResolvers += Resolver.file("some-id", file("/tmp/sbt/publish")), 
+    publishLocalConfiguration <<= (packagedArtifacts, deliverLocal, ivyLoggingLevel) map { 
+      (arts, _, level) => sbt.Classpaths.publishConfig(arts, None, resolverName = "some-id", logging = level ) 
+    }
+    )
+
+      
 
 	lazy val myProvided = config("provided") intransitive;
-	override def projects = super.projects.map(p => p.copy(configurations = (p.configurations.filter(_ != Provided)) :+ myProvided))
+	override def projects = super.projects.map(p => p.copy(configurations = (p.configurations.filter(_ != Provided)) :+ myProvided) settings(localPublishSettings: _*))
 	lazy val root: Project = Project("xsbt", file("."), aggregate = nonRoots ) settings( rootSettings : _*) configs( Sxr.sxrConf, Proguard )
 	lazy val nonRoots = projects.filter(_ != root).map(p => LocalProject(p.id))
 
@@ -130,7 +137,8 @@ object Sbt extends Build
 
 	def sbtSettings = Seq(
 		normalizedName := "sbt"
-	)
+  )
+
 
 	def scriptedTask: Initialize[InputTask[Unit]] = inputTask { result =>
 		(proguard in Proguard, fullClasspath in scriptedSbtSub in Test, scalaInstance in scriptedSbtSub, publishAll, version, scalaVersion, scriptedScalaVersion, scriptedSource, result) map {
@@ -187,10 +195,15 @@ object Sbt extends Build
 		sourceGenerators in Compile <+= (cacheDirectory, apiDefinitions, fullClasspath in Compile in datatypeSub, sourceManaged in Compile, mainClass in datatypeSub in Compile, runner, streams) map generateAPICached
 	)
 
-	def precompiledSettings = Seq(
+	def precompiledSettings(scalav: String) = Seq(
 		artifact in packageBin <<= scalaInstance in Compile apply { si =>
-			val bincID = binID + "_" + si.actualVersion
-			Artifact(binID) extra("e:component" -> bincID)
+		  if (scalav == null) {
+		    val bincID = binIDshort + "_" + si.actualVersion
+		    //println("BINID: " + binID + " " + binIDshort)
+			Artifact(binIDshort) extra("e:component" -> bincID)
+		  } else {
+			  Artifact("precompiled-" + scalav.replace('.', '_'))
+		  }
 		},
 		target <<= (target, scalaVersion) { (base, sv) => base / ("precompiled_" + sv) },
 		scalacOptions := Nil,
@@ -201,7 +214,7 @@ object Sbt extends Build
 		libraryDependencies += jlineDep artifacts(Artifact("jline", Map("e:component" -> srcID)))
 	)
 	//
-	def compileInterfaceSettings: Seq[Setting[_]] = precompiledSettings ++ Seq(
+	def compileInterfaceSettings: Seq[Setting[_]] = precompiledSettings(null) ++ Seq(
 		exportJars := true,
 		artifact in (Compile, packageSrc) := Artifact(srcID) extra("e:component" -> srcID)
 	)
@@ -209,5 +222,5 @@ object Sbt extends Build
 		libraryDependencies <+= scalaVersion( "org.scala-lang" % "scala-compiler" % _ % "test"),
 		unmanagedJars in Test <<= (packageSrc in compileInterfaceSub in Compile).map(x => Seq(x).classpath)
 	)
-	def precompiled(scalav: String): Project = baseProject(compilePath / "interface", "Precompiled " + scalav.replace('.', '_')) dependsOn(interfaceSub) settings(scalaVersion := scalav) settings(precompiledSettings : _*)
+	def precompiled(scalav: String): Project = baseProject(compilePath / "interface", "Precompiled " + scalav.replace('.', '_')) dependsOn(interfaceSub) settings(scalaVersion := scalav) settings(precompiledSettings(scalav) : _*)
 }
