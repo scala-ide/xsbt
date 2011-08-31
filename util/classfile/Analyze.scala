@@ -14,11 +14,11 @@ import java.lang.reflect.Modifier.{STATIC, PUBLIC, ABSTRACT}
 
 object Analyze
 {
-	def apply[T](outputDirectory: File, sources: Seq[File], log: Logger)(analysis: xsbti.AnalysisCallback, loader: ClassLoader, readAPI: (File,Seq[Class[_]]) => Unit)(compile: => Unit)
+	def apply[T](outputDirectories: List[File], sources: Seq[File], log: Logger)(analysis: xsbti.AnalysisCallback, loader: ClassLoader, readAPI: (File,Seq[Class[_]]) => Unit)(compile: => Unit)
 	{
 		val sourceMap = sources.toSet[File].groupBy(_.getName)
-		val classesFinder = PathFinder(outputDirectory) ** "*.class"
-		val existingClasses = classesFinder.get
+		val classesFinders = outputDirectories.map(PathFinder(_) ** "*.class")
+		val existingClasses = classesFinders.map(_.get).flatten
 
 		def load(tpe: String, errMsg: => Option[String]): Option[Class[_]] =
 			try { Some(Class.forName(tpe, false, loader)) }
@@ -27,7 +27,7 @@ object Analyze
 		// runs after compilation
 		def analyze()
 		{
-			val allClasses = Set(classesFinder.get: _*)
+			val allClasses = classesFinders.map(_.get).flatten.toSet
 			val newClasses = allClasses -- existingClasses
 			
 			val productToSource = new mutable.HashMap[File, File]
@@ -61,7 +61,7 @@ object Analyze
 							{
 								val resolved = resolveClassFile(file, tpe)
 								assume(resolved.exists, "Resolved class file " + resolved + " from " + source + " did not exist")
-								if(file == outputDirectory)
+								if(outputDirectories.contains(file))
 								{
 									productToSource.get(resolved) match
 									{

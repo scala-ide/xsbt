@@ -120,7 +120,7 @@ final class Execute[A[_] <: AnyRef](checkCycles: Boolean, triggers: Triggers[A])
 		results(node) = result
 		state(node) = Done
 		remove( reverse, node ) foreach { dep => notifyDone(node, dep) }
-		callers.remove( node ).flatten.foreach { c => retire(c, callerResult(c, result)) }
+		Option.option2Iterable(callers.remove( node )).flatten.foreach { c => retire(c, callerResult(c, result)) }
 		triggeredBy( node ) foreach { t => addChecked(t) }
 
 		post {
@@ -314,7 +314,7 @@ final class Execute[A[_] <: AnyRef](checkCycles: Boolean, triggers: Triggers[A])
 	{
 		if(node eq target) cyclic(node, target, "Cannot call self")
 		val all = IDSet.create[A[T]]
-		def allCallers(n: A[T]): Unit = (all process n)(()) { callers.get(n).flatten.foreach(allCallers) }
+		def allCallers(n: A[T]): Unit = (all process n)(()) { Option.option2Iterable(callers.get(n)).flatten.foreach(allCallers) }
 		allCallers(node)
 		if(all contains target) cyclic(node, target, "Cyclic reference")
 	}

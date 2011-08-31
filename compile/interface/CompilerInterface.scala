@@ -4,19 +4,27 @@
 package xsbt
 
 import xsbti.{AnalysisCallback,Logger,Problem,Reporter,Controller}
-import scala.tools.nsc.{Phase, SubComponent}
+import scala.tools.nsc.{Phase, SubComponent, Settings}
 import Log.debug
 
 class CompilerInterface
 {
-	def run(args: Array[String], callback: AnalysisCallback, log: Logger,
+  
+ 	def run(args: Array[String], callback: AnalysisCallback, log: Logger,
 	        delegate: Reporter, controller: Controller)
 	{
-			import scala.tools.nsc.{Global, Settings}
+      // Just provide basic settings with appropriate error function
+      run(args, callback, log, delegate, controller, new Settings(Log.settingsError(log)))
+	}
+  
+	def run(args: Array[String], callback: AnalysisCallback, log: Logger,
+	        delegate: Reporter, controller: Controller, settings0: Settings)
+	{
+		import scala.tools.nsc.Global
 
 		debug(log, "Interfacing (CompilerInterface) with Scala compiler " + scala.tools.nsc.Properties.versionString)
 
-		val settings = new Settings(Log.settingsError(log))
+		val settings = settings0//new Settings(Log.settingsError(log))
 		val command = Command(args.toList, settings)
 		val reporter = DelegatingReporter(settings, delegate)
 		def noErrors = !reporter.hasErrors && command.ok

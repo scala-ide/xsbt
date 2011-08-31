@@ -81,6 +81,11 @@ final class Eval(optionsNoncp: Seq[String], classpath: Seq[File], mkReporter: Se
 		
 		def compile(phase: Phase): Unit =
 		{
+		  
+		  implicit def reporterWithSource(rep: Reporter) = new {
+		    def withSource[A](src: scala.tools.nsc.util.SourceFile)(op: => A): A = op
+		  }
+		  
 			globalPhase = phase
 			if(phase == null || phase == phase.next || reporter.hasErrors)
 				()
@@ -108,7 +113,9 @@ final class Eval(optionsNoncp: Seq[String], classpath: Seq[File], mkReporter: Se
 	{
 		val emptyTypeName = nme.EMPTY.toTypeName
 		def emptyPkg = parser.atPos(0, 0, 0) { Ident(nme.EMPTY_PACKAGE_NAME) }
-		def emptyInit = DefDef(
+		def emptyInit = {
+		  implicit def compat28(tree: Tree) = emptyTypeName
+		  DefDef(
 			NoMods,
 			nme.CONSTRUCTOR,
 			Nil,
@@ -116,6 +123,7 @@ final class Eval(optionsNoncp: Seq[String], classpath: Seq[File], mkReporter: Se
 			TypeTree(),
 			Block(List(Apply(Select(Super(This(emptyTypeName), emptyTypeName), nme.CONSTRUCTOR), Nil)), Literal(Constant(())))
 		)
+	  }
 
 		def method = DefDef(NoMods, WrapValName, Nil, Nil, tpt, tree)
 		def moduleBody = Template(List(gen.scalaScalaObjectConstr), emptyValDef, List(emptyInit, method))
