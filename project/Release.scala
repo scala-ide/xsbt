@@ -14,17 +14,27 @@ object Release extends Plugin
 
 	def settings(nonRoots: => Seq[ProjectReference], launcher: ScopedTask[File]): Seq[Setting[_]] =
 		if(CredentialsFile.exists) releaseSettings(nonRoots, launcher) else Nil
+	def cutVersion(version: String): String = {
+	  val pattern = "(\\d)\\.(\\d+)\\..*".r
+	  version match {
+	    case pattern(major, minor)=>
+	      major + "." + minor
+	    case _ =>
+	      println("Invalid scala version")
+	      ""
+	  }
+	}
 
-	def releaseSettings(nonRoots: => Seq[ProjectReference], launcher: ScopedTask[File]): Seq[Setting[_]] = Seq(
+	def releaseSettings(nonRoots: => Seq[ProjectReference], launcher: ScopedTask[File]): Seq[Setting[_]] = {
+	  Seq(
 		publishTo in ThisBuild <<= publishResolver,
-		remoteID <<= publishStatus("typesafe-ivy-" + _),
+		remoteID <<= publishStatus("typesafe-ide-" + _),
 		credentials in Global += Credentials(CredentialsFile),
-		remoteBase <<= publishStatus( "https://typesafe.artifactoryonline.com/typesafe/ivy-" + _ ),
+		remoteBase <<= scalaVersion(sv => "https://typesafe.artifactoryonline.com/typesafe/ide-" + cutVersion(sv)),
 		publishAllArtifacts <<= Util.inAll(nonRoots, publish.task),
-		publishLauncher <<= deployLauncher(launcher),
-		publishRelease <<= Seq(publishLauncher, publishAllArtifacts).dependOn,
+		publishRelease <<= Seq(publishAllArtifacts).dependOn,
 		launcherRemotePath <<= (organization, version) { (org, v) => List(org, LaunchJarName, v, LaunchJarName + ".jar").mkString("/") }
-	)
+	)}
 	def deployLauncher(launcher: ScopedTask[File]) =
 		(launcher, launcherRemotePath, credentials, remoteBase, streams) map { (launchJar, remotePath, creds, base, s) =>
 			val (uname, pwd) = getCredentials(creds, s.log)
@@ -43,8 +53,9 @@ object Release extends Plugin
 		(creds.getUserName, creds.getPasswd)
 	}
 	def snapshotPattern(version: String) = Resolver.localBasePattern.replaceAll("""\[revision\]""", version)
-	def publishResolver: Project.Initialize[Option[Resolver]] = (remoteID, remoteBase) { (id, base) =>
-		Some( Resolver.url(id, url(base))(Resolver.ivyStylePatterns) )
+	def publishResolver: Project.Initialize[Option[Resolver]] = (remoteID, remoteBase) { (id, base) => {
+    println("Publish to " + base) 
+    Some( Resolver.url(id, url(base))(Resolver.mavenStylePatterns) )}
 	}
 
 	final val BinaryType = "binary/octet-stream"

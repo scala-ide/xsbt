@@ -15,20 +15,24 @@ object Sbt extends Build
 	override lazy val settings = super.settings ++ buildSettings ++ Status.settings
 	def buildSettings = Seq(
 		organization := "org.scala-tools.sbt",
-		version := "0.10.1-SNAPSHOT",
+		version := "0.10.3",
 		publishArtifact in packageDoc := false,
-		scalaVersion := "2.9.0-1",
+		scalaVersion := scalaVersionGlobal,
+		origScalaVersion := scalaVersionGlobal,
+		resolvers += ScalaToolsSnapshots,
+		resolvers += "Typesafe IDE repo" at ("http://typesafe.artifactoryonline.com/typesafe/ide-" + Release.cutVersion(scalaVersionGlobal)),
 		publishMavenStyle := true,
-		componentID := None	)
+		componentID := None)
   def localPublishSettings = Seq(
-    otherResolvers += Resolver.file("some-id", file("/tmp/sbt/publish")), 
+    otherResolvers += Resolver.file("some-id", file("/tmp/sbt/publish")),
     publishLocalConfiguration <<= (packagedArtifacts, deliverLocal, ivyLoggingLevel) map { 
       (arts, _, level) => sbt.Classpaths.publishConfig(arts, None, resolverName = "some-id", logging = level ) 
     }
     )
 
       
-
+    lazy val origScalaVersion = SettingKey[String]("orig-scala-version")
+    private val scalaVersionGlobal = "2.8.1"
 	lazy val myProvided = config("provided") intransitive;
 	override def projects = super.projects.map(p => p.copy(configurations = (p.configurations.filter(_ != Provided)) :+ myProvided) settings(localPublishSettings: _*))
 	lazy val root: Project = Project("xsbt", file("."), aggregate = nonRoots ) settings( rootSettings : _*) configs( Sxr.sxrConf, Proguard )
@@ -92,8 +96,11 @@ object Sbt extends Build
 		// Compiler-side interface to compiler that is compiled against the compiler being used either in advance or on the fly.
 		//   Includes API and Analyzer phases that extract source API and relationships.
 	lazy val compileInterfaceSub = baseProject(compilePath / "interface", "Compiler Interface") dependsOn(interfaceSub, ioSub % "test->test", logSub % "test->test", launchSub % "test->test") settings( compileInterfaceSettings : _*)
-	lazy val precompiled29 = precompiled("2.9.0-1")
-	lazy val precompiled28 = precompiled("2.8.1")
+	lazy val precompiled210 = precompiled("2.10.0-SNAPSHOT", scalaVersionGlobal)
+	lazy val precompiled291 = precompiled("2.9.1-SNAPSHOT", scalaVersionGlobal)
+	lazy val precompiled29 = precompiled("2.9.0-1", scalaVersionGlobal)
+	lazy val precompiled282 = precompiled("2.8.2-SNAPSHOT", scalaVersionGlobal)
+	lazy val precompiled28 = precompiled("2.8.1", scalaVersionGlobal)
 //	lazy val precompiled27 = precompiled("2.7.7")
 
 		// Implements the core functionality of detecting and propagating changes incrementally.
@@ -123,7 +130,7 @@ object Sbt extends Build
 		// Strictly for bringing implicits and aliases from subsystems into the top-level sbt namespace through a single package object
 		//  technically, we need a dependency on all of mainSub's dependencies, but we don't do that since this is strictly an integration project
 		//  with the sole purpose of providing certain identifiers without qualification (with a package object)
-	lazy val sbtSub = baseProject(sbtPath, "Simple Build Tool") dependsOn(mainSub, compileInterfaceSub, precompiled29, precompiled28, scriptedSbtSub % "test->test") settings(sbtSettings : _*)
+	lazy val sbtSub = baseProject(sbtPath, "Simple Build Tool") dependsOn(mainSub, compileInterfaceSub, precompiled210, precompiled291, precompiled29, precompiled282, precompiled28, scriptedSbtSub % "test->test") settings(sbtSettings : _*)
 
 		/* Nested subproject paths */
 	def sbtPath = file("sbt")
@@ -162,8 +169,8 @@ object Sbt extends Build
 			Defaults.inAllProjects(sxrProjects, scoped, Project.extract(s).structure.data)
 		}
 
-	def launchSettings = inConfig(Compile)(Transform.configSettings) ++ Seq(jline, ivy, crossPaths := false,
-		compile in Test <<= compile in Test dependsOn(publishLocal in interfaceSub, publishLocal in testSamples, publishLocal in launchInterfaceSub)
+	def launchSettings = inConfig(Compile)(Transform.configSettings) ++ Seq(jline, ivy, //crossPaths := false,
+    compile in Test <<= compile in Test dependsOn(publishLocal in interfaceSub, publishLocal in testSamples, publishLocal in launchInterfaceSub)
 //		mappings in (Compile, packageBin) <++= (mappings in (launchInterfaceSub, Compile, packageBin) ).identity
 	)
 
@@ -185,26 +192,30 @@ object Sbt extends Build
 	def docSetting = inConfig(Compile)(inTask(sxr)(doc in ThisScope.copy(task = Global, config = Global) <<= Defaults.docTask))
 
 	def interfaceSettings = javaOnly ++ Seq(
-		crossPaths := false,
-		projectComponent,
-		exportJars := true,
-		componentID := Some("xsbti"),
-		watchSources <++= apiDefinitions.identity,
-		resourceGenerators in Compile <+= (version, resourceManaged, streams) map generateVersionFile,
-		apiDefinitions <<= baseDirectory map { base => (base / "definition") :: (base / "other") :: (base / "type") :: Nil },
-		sourceGenerators in Compile <+= (cacheDirectory, apiDefinitions, fullClasspath in Compile in datatypeSub, sourceManaged in Compile, mainClass in datatypeSub in Compile, runner, streams) map generateAPICached
-	)
+    name <<= (name, scalaVersion) { (n, sv) =>
+      n + "_" + sv
+    },
+    normalizedName <<= (name){ (n) => StringUtilities.normalize(n).replaceAll("""snapshot""", "SNAPSHOT")},
+    crossPaths := false,
+    projectComponent,
+    exportJars := true,
+    componentID := Some("xsbti"),
+    watchSources <++= apiDefinitions.identity,
+    resourceGenerators in Compile <+= (version, resourceManaged, streams) map generateVersionFile,
+    apiDefinitions <<= baseDirectory map { base => (base / "definition") :: (base / "other") :: (base / "type") :: Nil },
+    sourceGenerators in Compile <+= (cacheDirectory, apiDefinitions, fullClasspath in Compile in datatypeSub, sourceManaged in Compile, mainClass in datatypeSub in Compile, runner, streams) map generateAPICached
+  )
 
-	def precompiledSettings(scalav: String) = Seq(
-		artifact in packageBin <<= scalaInstance in Compile apply { si =>
+	def precompiledSettings(scalav: String, additional: Seq[Setting[_]]) = additional ++ Seq(
+		artifact in packageBin <<= (scalaInstance in Compile, scalaVersion, origScalaVersion) apply { (si, sv, o) =>
 		  if (scalav == null) {
 		    val bincID = binIDshort + "_" + si.actualVersion
-		    //println("BINID: " + binID + " " + binIDshort)
-			Artifact(binIDshort) extra("e:component" -> bincID)
-		  } else {
-			  Artifact("precompiled-" + scalav.replace('.', '_'))
-		  }
-		},
+		    val binIDName = binIDshort + "_" + sv
+        Artifact(binIDName) extra("e:component" -> bincID)
+      } else {
+        Artifact("precompiled-" + o + "-" + scalav.replace('.', '_'))
+      }
+    },    
 		target <<= (target, scalaVersion) { (base, sv) => base / ("precompiled_" + sv) },
 		scalacOptions := Nil,
 		crossPaths := false,
@@ -213,8 +224,10 @@ object Sbt extends Build
 		libraryDependencies <+= scalaVersion( "org.scala-lang" % "scala-compiler" % _ % "provided"),
 		libraryDependencies += jlineDep artifacts(Artifact("jline", Map("e:component" -> srcID)))
 	)
-	//
-	def compileInterfaceSettings: Seq[Setting[_]] = precompiledSettings(null) ++ Seq(
+
+	def compileInterfaceSettings: Seq[Setting[_]] = precompiledSettings(null,(Seq(    name <<= (name, scalaVersion) { (n, sv) =>
+      n + "_" + sv
+    }, normalizedName <<= (name){ (n) => StringUtilities.normalize(n).replaceAll("""snapshot""", "SNAPSHOT")}))) ++ Seq(
 		exportJars := true,
 		artifact in (Compile, packageSrc) := Artifact(srcID) extra("e:component" -> srcID)
 	)
@@ -222,5 +235,5 @@ object Sbt extends Build
 		libraryDependencies <+= scalaVersion( "org.scala-lang" % "scala-compiler" % _ % "test"),
 		unmanagedJars in Test <<= (packageSrc in compileInterfaceSub in Compile).map(x => Seq(x).classpath)
 	)
-	def precompiled(scalav: String): Project = baseProject(compilePath / "interface", "Precompiled " + scalav.replace('.', '_')) dependsOn(interfaceSub) settings(scalaVersion := scalav) settings(precompiledSettings(scalav) : _*)
+	def precompiled(scalav: String, globalScala: String): Project = baseProject(compilePath / "interface", "Precompiled " + globalScala + " " + scalav.replace('.', '_')) dependsOn(interfaceSub) settings(scalaVersion := scalav) settings(precompiledSettings(scalav, Seq(normalizedName <<= (name){ (n) => StringUtilities.normalize(n).replaceAll("""snapshot""", "SNAPSHOT")})) : _*)
 }
