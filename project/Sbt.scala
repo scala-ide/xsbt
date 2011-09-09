@@ -32,7 +32,7 @@ object Sbt extends Build
 
       
     lazy val origScalaVersion = SettingKey[String]("orig-scala-version")
-    private val scalaVersionGlobal = "2.8.1"
+    private val scalaVersionGlobal = "2.9.0-1"
 	lazy val myProvided = config("provided") intransitive;
 	override def projects = super.projects.map(p => p.copy(configurations = (p.configurations.filter(_ != Provided)) :+ myProvided) settings(localPublishSettings: _*))
 	lazy val root: Project = Project("xsbt", file("."), aggregate = nonRoots ) settings( rootSettings : _*) configs( Sxr.sxrConf, Proguard )
@@ -191,7 +191,7 @@ object Sbt extends Build
 	)
 	def docSetting = inConfig(Compile)(inTask(sxr)(doc in ThisScope.copy(task = Global, config = Global) <<= Defaults.docTask))
 
-	def interfaceSettings = javaOnly ++ Seq(
+  def interfaceSettings = javaOnly ++ Seq(
     name <<= (name, scalaVersion) { (n, sv) =>
       n + "_" + sv
     },
