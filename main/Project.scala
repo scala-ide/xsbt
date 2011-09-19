@@ -6,7 +6,7 @@ package sbt
 	import java.io.File
 	import java.net.URI
 	import Project._
-	import Keys.{appConfiguration, stateBuildStructure, commands, configuration, historyPath, logged, projectCommand, sessionSettings, shellPrompt, streams, thisProject, thisProjectRef, watch}
+	import Keys.{appConfiguration, stateBuildStructure, commands, configuration, historyPath, projectCommand, sessionSettings, shellPrompt, streams, thisProject, thisProjectRef, watch}
 	import Scope.{GlobalScope,ThisScope}
 	import Load.BuildStructure
 	import CommandSupport.logger
@@ -52,6 +52,7 @@ sealed trait Project extends ProjectDefinition[ProjectReference]
 		apply(id, base, aggregate = resolveRefs(aggregate), dependencies = resolveDeps(dependencies), delegates = resolveRefs(delegates), settings, configurations)
 	}
 
+	def overrideConfigs(cs: Configuration*): Project = copy(configurations = Defaults.overrideConfigs(cs : _*)(configurations))
 	def dependsOn(deps: ClasspathDep[ProjectReference]*): Project = copy(dependencies = dependencies ++ deps)
 	def delegateTo(from: ProjectReference*): Project = copy(delegates = delegates ++ from)
 	def aggregate(refs: ProjectReference*): Project = copy(aggregate = (aggregate: Seq[ProjectReference]) ++ refs)
@@ -60,29 +61,28 @@ sealed trait Project extends ProjectDefinition[ProjectReference]
 }
 sealed trait ResolvedProject extends ProjectDefinition[ProjectRef]
 
-final case class Extracted(structure: BuildStructure, session: SessionSettings, currentRef: ProjectRef, rootProject: URI => String)
+final case class Extracted(structure: BuildStructure, session: SessionSettings, currentRef: ProjectRef)(implicit val showKey: Show[ScopedKey[_]])
 {
+	def rootProject = structure.rootProject
 	lazy val currentUnit = structure units currentRef.build
 	lazy val currentProject = currentUnit defined currentRef.project
+	lazy val currentLoader: ClassLoader = currentUnit.loader
 	def get[T](key: ScopedTask[T]): Task[T] = get(key.task)
-	def get[T](key: ScopedSetting[T]): T =
-	{
-		val scope = if(key.scope.project == This) key.scope.copy(project = Select(currentRef)) else key.scope
-		getOrError(scope, key.key)
-	}
+	def get[T](key: ScopedSetting[T]) = getOrError(inCurrent(key), key.key)
+	def getOpt[T](key: ScopedSetting[T]): Option[T] = structure.data.get(inCurrent(key), key.key)
+	private[this] def inCurrent[T](key: ScopedSetting[T]): Scope  =  if(key.scope.project == This) key.scope.copy(project = Select(currentRef)) else key.scope
 	def evalTask[T](key: ScopedTask[T], state: State): T =
 	{
 			import EvaluateTask._
-		val extracted = Project.extract(state)
-		val rkey = Project.mapScope(Scope.resolveScope(GlobalScope, extracted.currentRef.build, rootProject) )( key )
-		val value: Option[Result[T]] = evaluateTask(structure, key.task.scoped, state, currentRef)
+		val rkey = Project.mapScope(Scope.resolveScope(GlobalScope, currentRef.build, rootProject) )( key.scopedKey )
+		val value: Option[Result[T]] = evaluateTask(structure, key.task.scopedKey, state, currentRef)
 		val result = getOrError(rkey.scope, rkey.key, value)
 		processResult(result, ConsoleLogger())
 	}
-	private def getOrError[T](scope: Scope, key: AttributeKey[_], value: Option[T]): T =
-		value getOrElse error(Project.display(ScopedKey(scope, key)) + " is undefined.")
-	private def getOrError[T](scope: Scope, key: AttributeKey[T]): T =
-		structure.data.get(scope, key) getOrElse error(Project.display(ScopedKey(scope, key)) + " is undefined.")
+	private def getOrError[T](scope: Scope, key: AttributeKey[_], value: Option[T])(implicit display: Show[ScopedKey[_]]): T =
+		value getOrElse error(display(ScopedKey(scope, key)) + " is undefined.")
+	private def getOrError[T](scope: Scope, key: AttributeKey[T])(implicit display: Show[ScopedKey[_]]): T =
+		structure.data.get(scope, key) getOrElse error(display(ScopedKey(scope, key)) + " is undefined.")
 
 	def append(settings: Seq[Setting[_]], state: State): State =
 	{
@@ -98,6 +98,21 @@ final case class ClasspathDependency(project: ProjectReference, configuration: O
 
 object Project extends Init[Scope] with ProjectExtra
 {
+	lazy val showFullKey: Show[ScopedKey[_]] = new Show[ScopedKey[_]] { def apply(key: ScopedKey[_]) = displayFull(key) }
+	def showContextKey(state: State): Show[ScopedKey[_]] =
+		if(isProjectLoaded(state)) showContextKey( session(state), structure(state) ) else showFullKey
+	def showContextKey(session: SessionSettings, structure: BuildStructure): Show[ScopedKey[_]] = showRelativeKey(session.current, structure.allProjects.size > 1)
+	def showLoadingKey(loaded: Load.LoadedBuild): Show[ScopedKey[_]] = showRelativeKey( ProjectRef(loaded.root, loaded.units(loaded.root).rootProjects.head), loaded.allProjectRefs.size > 1 )
+	def showRelativeKey(current: ProjectRef, multi: Boolean): Show[ScopedKey[_]] = new Show[ScopedKey[_]] {
+		def apply(key: ScopedKey[_]) = Scope.display(key.scope, key.key.label, ref => displayRelative(current, multi, ref))
+	}
+	def displayRelative(current: ProjectRef, multi: Boolean, project: Reference): String = project match {
+		case BuildRef(current.build) => "{.}/"
+		case `current` => if(multi) current.project + "/" else ""
+		case ProjectRef(current.build, x) => x + "/"
+		case _ => display(project)
+	}
+
 	private abstract class ProjectDef[PR <: ProjectReference](val id: String, val base: File, aggregate0: => Seq[PR], dependencies0: => Seq[ClasspathDep[PR]], delegates0: => Seq[PR],
 		settings0: => Seq[Setting[_]], val configurations: Seq[Configuration]) extends ProjectDefinition[PR]
 	{
@@ -126,18 +141,20 @@ object Project extends Init[Scope] with ProjectExtra
 	def getOrError[T](state: State, key: AttributeKey[T], msg: String): T = state get key getOrElse error(msg)
 	def structure(state: State): BuildStructure = getOrError(state, stateBuildStructure, "No build loaded.")
 	def session(state: State): SessionSettings = getOrError(state, sessionSettings, "Session not initialized.")
+	def isProjectLoaded(state: State): Boolean = (state has sessionSettings) && (state has stateBuildStructure)
 
 	def extract(state: State): Extracted  =  extract( session(state), structure(state) )
-	def extract(se: SessionSettings, st: BuildStructure): Extracted  =  Extracted(st, se, se.current, Load.getRootProject(st.units))
+	def extract(se: SessionSettings, st: BuildStructure): Extracted  =  Extracted(st, se, se.current)( showContextKey(se, st) )
 
 	def getProjectForReference(ref: Reference, structure: BuildStructure): Option[ResolvedProject] =
 		ref match { case pr: ProjectRef => getProject(pr, structure); case _ => None }
-	def getProject(ref: ProjectRef, structure: BuildStructure): Option[ResolvedProject] =
-		(structure.units get ref.build).flatMap(_.defined get ref.project)
+	def getProject(ref: ProjectRef, structure: BuildStructure): Option[ResolvedProject] = getProject(ref, structure.units)
+	def getProject(ref: ProjectRef, structure: Load.LoadedBuild): Option[ResolvedProject] = getProject(ref, structure.units)
+	def getProject(ref: ProjectRef, units: Map[URI, Load.LoadedBuildUnit]): Option[ResolvedProject] =
+		(units get ref.build).flatMap(_.defined get ref.project)
 
 	def setProject(session: SessionSettings, structure: BuildStructure, s: State): State =
 	{
-		SessionSettings.checkSession(session, s)
 		val previousOnUnload = orIdentity(s get Keys.onUnload.key)
 		val unloaded = previousOnUnload(s.runExitHooks())
 		val (onLoad, onUnload) = getHooks(structure.data)
@@ -150,13 +167,13 @@ object Project extends Init[Scope] with ProjectExtra
 	def getHooks(data: Settings[Scope]): (State => State, State => State)  =  (getHook(Keys.onLoad, data), getHook(Keys.onUnload, data))
 
 	def current(state: State): ProjectRef = session(state).current
-	def updateCurrent(s0: State): State =
+	def updateCurrent(s: State): State =
 	{
-		val structure = Project.structure(s0)
-		val ref = Project.current(s0)
-		val s = installGlobalLogger(s0, structure, ref)
+		val structure = Project.structure(s)
+		val ref = Project.current(s)
 		val project = Load.getProject(structure.units, ref.build, ref.project)
-		logger(s).info("Set current project to " + ref.project + " (in build " + ref.build +")")
+		val msg = Keys.onLoadMessage in ref get structure.data getOrElse ""
+		if(!msg.isEmpty) logger(s).info(msg)
 		def get[T](k: SettingKey[T]): Option[T] = k in ref get structure.data
 		def commandsIn(axis: ResolvedReference) = commands in axis get structure.data toList ;
 
@@ -171,10 +188,10 @@ object Project extends Init[Scope] with ProjectExtra
 	}
 	def setCond[T](key: AttributeKey[T], vopt: Option[T], attributes: AttributeMap): AttributeMap =
 		vopt match { case Some(v) => attributes.put(key, v); case None => attributes.remove(key) }
-	def makeSettings(settings: Seq[Setting[_]], delegates: Scope => Seq[Scope], scopeLocal: ScopedKey[_] => Seq[Setting[_]]) =
-		translateCyclic( make(settings)(delegates, scopeLocal) )
+	def makeSettings(settings: Seq[Setting[_]], delegates: Scope => Seq[Scope], scopeLocal: ScopedKey[_] => Seq[Setting[_]])(implicit display: Show[ScopedKey[_]]) =
+		translateCyclic( make(settings)(delegates, scopeLocal, display) )
 
-	def display(scoped: ScopedKey[_]): String = Scope.display(scoped.scope, scoped.key.label)
+	def displayFull(scoped: ScopedKey[_]): String = Scope.display(scoped.scope, scoped.key.label)
 	def display(ref: Reference): String =
 		ref match
 		{
@@ -218,7 +235,7 @@ object Project extends Init[Scope] with ProjectExtra
 	def delegates(structure: BuildStructure, scope: Scope, key: AttributeKey[_]): Seq[ScopedKey[_]] =
 		structure.delegates(scope).map(d => ScopedKey(d, key))
 
-	def details(structure: BuildStructure, actual: Boolean, scope: Scope, key: AttributeKey[_]): String =
+	def details(structure: BuildStructure, actual: Boolean, scope: Scope, key: AttributeKey[_])(implicit display: Show[ScopedKey[_]]): String =
 	{
 		val scoped = ScopedKey(scope,key)
 		lazy val clazz = key.manifest.erasure
@@ -241,12 +258,12 @@ object Project extends Init[Scope] with ProjectExtra
 			case Some(sc) => "Provided by:\n\t" + Scope.display(sc, key.label) + "\n"
 			case None => ""
 		}
-		val cMap = compiled(structure.settings, actual)(structure.delegates, structure.scopeLocal)
+		val cMap = compiled(structure.settings, actual)(structure.delegates, structure.scopeLocal, display)
 		val related = cMap.keys.filter(k => k.key == key && k.scope != scope)
 		val depends = cMap.get(scoped) match { case Some(c) => c.dependencies.toSet; case None => Set.empty }
 		val reverse = reverseDependencies(cMap, scoped)
 		def printScopes(label: String, scopes: Iterable[ScopedKey[_]]) =
-			if(scopes.isEmpty) "" else scopes.map(display).mkString(label + ":\n\t", "\n\t", "\n")
+			if(scopes.isEmpty) "" else scopes.map(display.apply).mkString(label + ":\n\t", "\n\t", "\n")
 
 		value + "\n" +
 			description +
@@ -256,22 +273,25 @@ object Project extends Init[Scope] with ProjectExtra
 			printScopes("Delegates", delegates(structure, scope, key)) +
 			printScopes("Related", related)
 	}
-	def graphSettings(structure: BuildStructure, basedir: File)
+	def graphSettings(structure: BuildStructure, basedir: File)(implicit display: Show[ScopedKey[_]])
 	{
 		def graph(actual: Boolean, name: String) = graphSettings(structure, actual, name, new File(basedir, name + ".dot"))
 		graph(true, "actual_dependencies")
 		graph(false, "declared_dependencies")
 	}
-	def graphSettings(structure: BuildStructure, actual: Boolean, graphName: String, file: File)
+	def graphSettings(structure: BuildStructure, actual: Boolean, graphName: String, file: File)(implicit display: Show[ScopedKey[_]])
+	{
+		val rel = relation(structure, actual)
+		val keyToString = display.apply _
+		DotGraph.generateGraph(file, graphName, rel, keyToString, keyToString)
+	}
+	def relation(structure: BuildStructure, actual: Boolean)(implicit display: Show[ScopedKey[_]]) =
 	{
 		type Rel = Relation[ScopedKey[_], ScopedKey[_]]
-		val cMap = compiled(structure.settings, actual)(structure.delegates, structure.scopeLocal)
-		val relation =
-			((Relation.empty: Rel) /: cMap) { case (r, (key, value)) =>
-				r + (key, value.dependencies)
-			}
-		val keyToString = (key: ScopedKey[_]) => Project display key
-		DotGraph.generateGraph(file, graphName, relation, keyToString, keyToString)
+		val cMap = compiled(structure.settings, actual)(structure.delegates, structure.scopeLocal, display)
+		((Relation.empty: Rel) /: cMap) { case (r, (key, value)) =>
+			r + (key, value.dependencies)
+		}
 	}
 	def reverseDependencies(cMap: CompiledMap, scoped: ScopedKey[_]): Iterable[ScopedKey[_]] =
 		for( (key,compiled) <- cMap; dep <- compiled.dependencies if dep == scoped)  yield  key
@@ -309,15 +329,9 @@ object Project extends Init[Scope] with ProjectExtra
 		val extracted = Project.extract(state)
 		EvaluateTask.evaluateTask(extracted.structure, taskKey, state, extracted.currentRef, checkCycles, maxWorkers)
 	}
-	def globalLoggerKey(ref: ScopeAxis[ResolvedReference]) = fillTaskAxis(ScopedKey(GlobalScope.copy(project = ref), streams.key))
-	def installGlobalLogger(s: State, structure: BuildStructure, ref: ProjectRef): State =
-	{
-		val str = structure.streams(globalLoggerKey(Select(ref)))
-		str.open()
-		s.put(logged, str.log).addExitHook { str.close() }
-	}
 	// this is here instead of Scoped so that it is considered without need for import (because of Project.Initialize)
 	implicit def richInitializeTask[T](init: Initialize[Task[T]]): Scoped.RichInitializeTask[T] = new Scoped.RichInitializeTask(init)
+	implicit def richInitialize[T](i: Initialize[T]): Scoped.RichInitialize[T] = new Scoped.RichInitialize[T](i)
 }
 
 trait ProjectExtra

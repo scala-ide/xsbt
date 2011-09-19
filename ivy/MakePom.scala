@@ -9,39 +9,44 @@ package sbt;
 
 import java.io.{BufferedWriter, File, OutputStreamWriter, FileOutputStream}
 import scala.xml.{Node => XNode, NodeSeq, PrettyPrinter, XML}
+import Configurations.Optional
 
 import org.apache.ivy.{core, plugins, Ivy}
 import core.settings.IvySettings
 import core.module.{descriptor, id}
-import descriptor.{DependencyDescriptor, License, ModuleDescriptor}
+import descriptor.{DependencyDescriptor, License, ModuleDescriptor, ExcludeRule}
 import id.ModuleRevisionId
 import plugins.resolver.{ChainResolver, DependencyResolver, IBiblioResolver}
 
-class MakePom
+class MakePom(val log: Logger)
 {
 	def encoding = "UTF-8"
-	def write(ivy: Ivy, module: ModuleDescriptor, configurations: Option[Iterable[Configuration]], extra: NodeSeq, process: XNode => XNode, filterRepositories: MavenRepository => Boolean, allRepositories: Boolean, output: File): Unit =
-		write(process(toPom(ivy, module, configurations, extra, filterRepositories, allRepositories)), output)
-	def write(node: XNode, output: File): Unit = write(toString(node), output)
-	def write(xmlString: String, output: File)
+	def write(ivy: Ivy, module: ModuleDescriptor, moduleInfo: ModuleInfo, configurations: Option[Iterable[Configuration]], extra: NodeSeq, process: XNode => XNode, filterRepositories: MavenRepository => Boolean, allRepositories: Boolean, output: File): Unit =
+		write(process(toPom(ivy, module, moduleInfo, configurations, extra, filterRepositories, allRepositories)), output)
+	// use \n as newline because toString uses PrettyPrinter, which hard codes line endings to be \n
+	def write(node: XNode, output: File): Unit = write(toString(node), output, "\n")
+	def write(xmlString: String, output: File, newline: String)
 	{
 		output.getParentFile.mkdirs()
 		val out = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(output), encoding))
 		try
 		{
-			out.write("<?xml version='1.0' encoding='" + encoding + "'?>")
-			out.newLine()
+			out.write("<?xml version='1.0' encoding='" + encoding + "'?>" + newline)
 			out.write(xmlString)
 		}
 		finally { out.close() }
 	}
 
 	def toString(node: XNode): String = new PrettyPrinter(1000, 4).format(node)
-	def toPom(ivy: Ivy, module: ModuleDescriptor, configurations: Option[Iterable[Configuration]], extra: NodeSeq, filterRepositories: MavenRepository => Boolean, allRepositories: Boolean): XNode =
+	def toPom(ivy: Ivy, module: ModuleDescriptor, moduleInfo: ModuleInfo, configurations: Option[Iterable[Configuration]], extra: NodeSeq, filterRepositories: MavenRepository => Boolean, allRepositories: Boolean): XNode =
 		(<project xmlns="http://maven.apache.org/POM/4.0.0"  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 			<modelVersion>4.0.0</modelVersion>
 			{ makeModuleID(module) }
+			<name>{moduleInfo.nameFormal}</name>
+			{ makeStartYear(moduleInfo) }
+			{ makeOrganization(moduleInfo) }
 			{ extra }
+			{ makeProperties(module) }
 			{ makeDependencies(module, configurations) }
 			{ makeRepositories(ivy.getSettings, allRepositories, filterRepositories) }
 		</project>)
@@ -61,13 +66,32 @@ class MakePom
 		a ++ b
 	}
 
+	def makeStartYear(moduleInfo: ModuleInfo): NodeSeq = moduleInfo.startYear map { y => <inceptionYear>{y}</inceptionYear> } getOrElse NodeSeq.Empty
+	def makeOrganization(moduleInfo: ModuleInfo): NodeSeq =
+	{
+		<organization>
+			<name>{moduleInfo.organizationName}</name>
+			{ moduleInfo.organizationHomepage map { h => <url>{h}</url> } getOrElse NodeSeq.Empty }
+		</organization>
+	}
+	def makeProperties(module: ModuleDescriptor): NodeSeq =
+	{
+		val extra = IvySbt.getExtraAttributes(module)
+		if(extra.isEmpty) NodeSeq.Empty else makeProperties(extra)
+	}
+	def makeProperties(extra: Map[String,String]): NodeSeq =
+		<properties> {
+			for( (key,value) <- extra ) yield
+				(<x>{value}</x>).copy(label = key)
+		} </properties>
+
 	def description(d: String) = if((d eq null) || d.isEmpty) NodeSeq.Empty else <description>{d}</description>
 	def licenses(ls: Array[License]) = if(ls == null || ls.isEmpty) NodeSeq.Empty else <licenses>{ls.map(license)}</licenses>
 	def license(l: License) =
 		<license>
 			<name>{l.getName}</name>
 			<url>{l.getUrl}</url>
-			<distribution>jar</distribution>
+			<distribution>repo</distribution>
 		</license>
 	def homePage(homePage: String) = if(homePage eq null) NodeSeq.Empty else <url>{homePage}</url>
 	def revision(version: String) = if(version ne null) <version>{version}</version> else NodeSeq.Empty
@@ -77,10 +101,14 @@ class MakePom
 			case Array() => "pom"
 			case Array(x) => x.getType
 			case xs =>
-				val types = xs.map(_.getType)
-				val notpom = types.toList - "pom"
-				if(notpom.isEmpty) "pom" else if(notpom contains "jar") "jar" else notpom.head
+				val types = xs.map(_.getType).toList.filterNot(IgnoreTypes)
+				types match {
+					case Nil => Artifact.PomType
+					case xs if xs.contains(Artifact.DefaultType) => Artifact.DefaultType
+					case x :: xs => x
+				}
 		}
+	val IgnoreTypes: Set[String] = Set(Artifact.SourceType, Artifact.DocType, Artifact.PomType)
 
 	def makeDependencies(module: ModuleDescriptor, configurations: Option[Iterable[Configuration]]): NodeSeq =
 	{
@@ -95,36 +123,66 @@ class MakePom
 	def makeDependency(dependency: DependencyDescriptor): NodeSeq =
 	{
 		val mrid = dependency.getDependencyRevisionId
+		val excl = dependency.getExcludeRules(dependency.getModuleConfigurations)
 		<dependency>
 			<groupId>{mrid.getOrganisation}</groupId>
 			<artifactId>{mrid.getName}</artifactId>
 			<version>{mrid.getRevision}</version>
-			{ scope(dependency)}
-			{ optional(dependency) }
+			{ scopeAndOptional(dependency) }
+			{
+				val (warns, excls) = List.separate(excl.map(makeExclusion))
+				if(!warns.isEmpty) log.warn(warns.mkString(IO.Newline))
+				if(excls.isEmpty) NodeSeq.Empty
+				else
+					<exclusions>
+						{ excls }
+					</exclusions>
+			}
 		</dependency>
 	}
 
-	def scope(dependency: DependencyDescriptor): NodeSeq =
-		scope(getScope(dependency.getModuleConfigurations))
-	def scope(scope: String): NodeSeq = if(scope ne null) <scope>{scope}</scope> else NodeSeq.Empty
-	def optional(dependency: DependencyDescriptor) =
-		if(isOptional(dependency.getModuleConfigurations)) <optional>true</optional> else NodeSeq.Empty
+	def scopeAndOptional(dependency: DependencyDescriptor): NodeSeq  =
+	{
+		val (scope, opt) = getScopeAndOptional(dependency.getModuleConfigurations)
+		scopeElem(scope) ++ optionalElem(opt)
+	}
+	def scopeElem(scope: Option[String]): NodeSeq = scope match {
+		case Some(s) => <scope>{s}</scope>
+		case None => NodeSeq.Empty
+	}
+	def optionalElem(opt: Boolean)  =  if(opt) <optional>true</optional> else NodeSeq.Empty
 	def moduleDescriptor(module: ModuleDescriptor) = module.getModuleRevisionId
 
-	def getScope(confs: Array[String]) =
+	def getScopeAndOptional(confs: Array[String]): (Option[String], Boolean) =
 	{
-		Configurations.defaultMavenConfigurations.find(conf => confs.contains(conf.name)) match
+		val (opt, notOptional) = confs.partition(_ == Optional.name)
+		val defaultNotOptional = Configurations.defaultMavenConfigurations.find(notOptional contains _.name)
+		val scope = defaultNotOptional match
 		{
-			case Some(conf) => conf.name
+			case Some(conf) => Some(conf.name)
 			case None =>
-				if(confs.isEmpty || confs(0) == Configurations.Default.name)
-					null
+				if(notOptional.isEmpty || notOptional(0) == Configurations.Default.name)
+					None
 				else
-					confs(0)
+					Option(notOptional(0))
 		}
+		(scope, !opt.isEmpty)
 	}
-	def isOptional(confs: Array[String]) = confs.isEmpty || (confs.length == 1 && confs(0) == Configurations.Optional.name)
 
+	def makeExclusion(exclRule: ExcludeRule): Either[String, NodeSeq] =
+	{
+		val m = exclRule.getId.getModuleId
+		val (g, a) = (m.getOrganisation, m.getName)
+		if(g == null || g.isEmpty || g == "*" || a.isEmpty || a == "*")
+			Left("Skipped generating '<exclusion/>' for %s. Dependency exclusion should have both 'org' and 'module' to comply with Maven POM's schema.".format(m))
+		else
+			Right(
+				<exclusion>
+					<groupId>{g}</groupId>
+					<artifactId>{a}</artifactId>
+				</exclusion>
+			)
+	}
 
 	def makeRepositories(settings: IvySettings, includeAll: Boolean, filterRepositories: MavenRepository => Boolean) =
 	{
@@ -158,6 +216,7 @@ class MakePom
 			<id>{id}</id>
 			<name>{name}</name>
 			<url>{root}</url>
+			<layout>{ if(name == JavaNet1Repository.name) "legacy" else "default" }</layout>
 		</repository>
 
 	/** Retain dependencies only with the configurations given, or all public configurations of `module` if `configurations` is None.

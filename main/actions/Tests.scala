@@ -40,7 +40,7 @@ object Tests
 	final case class Argument(framework: Option[TestFramework], args: List[String]) extends TestOption
 
 	
-	def apply(frameworks: Map[TestFramework, Framework], testLoader: ClassLoader, discovered: Seq[TestDefinition], options: Seq[TestOption], parallel: Boolean, log: Logger): Task[Output] =
+	def apply(frameworks: Map[TestFramework, Framework], testLoader: ClassLoader, discovered: Seq[TestDefinition], options: Seq[TestOption], parallel: Boolean, noTestsMessage: => String, log: Logger): Task[Output] =
 	{
 			import mutable.{HashSet, ListBuffer, Map, Set}
 		val testFilters = new ListBuffer[String => Boolean]
@@ -48,8 +48,14 @@ object Tests
 		val setup, cleanup = new ListBuffer[ClassLoader => Unit]
 		val testListeners = new ListBuffer[TestReportListener]
 		val testArgsByFramework = Map[Framework, ListBuffer[String]]()
+		val undefinedFrameworks = new ListBuffer[String]
 		def frameworkArgs(framework: Framework, args: Seq[String]): Unit =
 			testArgsByFramework.getOrElseUpdate(framework, new ListBuffer[String]) ++= args
+		def frameworkArguments(framework: TestFramework, args: Seq[String]): Unit =
+			(frameworks get framework) match {
+				case Some(f) => frameworkArgs(f, args)
+				case None => undefinedFrameworks += framework.implClassName
+			}
 
 		for(option <- options)
 		{
@@ -69,21 +75,23 @@ object Tests
 					*   -- command line arguments (ex: test-only someClass -- someArg)
 					*      (currently, command line args must be passed to all frameworks)
 					*/
-				case Argument(Some(framework), args) => frameworkArgs(frameworks(framework), args)
+				case Argument(Some(framework), args) => frameworkArguments(framework, args)
 				case Argument(None, args) => frameworks.values.foreach { f => frameworkArgs(f, args) }
 			}
 		}
 
 		if(excludeTestsSet.size > 0)
 			log.debug(excludeTestsSet.mkString("Excluding tests: \n\t", "\n\t", ""))
+		if(undefinedFrameworks.size > 0)
+			log.warn("Arguments defined for test frameworks that are not present:\n\t" + undefinedFrameworks.mkString("\n\t"))
 
 		def includeTest(test: TestDefinition) = !excludeTestsSet.contains(test.name) && testFilters.forall(filter => filter(test.name))
 		val tests = discovered.filter(includeTest).toSet.toSeq
 		val arguments = testArgsByFramework.map { case (k,v) => (k, v.toList) } toMap;
-		testTask(frameworks.values.toSeq, testLoader, tests, setup.readOnly, cleanup.readOnly, log, testListeners.readOnly, arguments, parallel)
+		testTask(frameworks.values.toSeq, testLoader, tests, noTestsMessage, setup.readOnly, cleanup.readOnly, log, testListeners.readOnly, arguments, parallel)
 	}
 
-	def testTask(frameworks: Seq[Framework], loader: ClassLoader, tests: Seq[TestDefinition],
+	def testTask(frameworks: Seq[Framework], loader: ClassLoader, tests: Seq[TestDefinition], noTestsMessage: => String,
 		userSetup: Iterable[ClassLoader => Unit], userCleanup: Iterable[ClassLoader => Unit],
 		log: Logger, testListeners: Seq[TestReportListener], arguments: Map[Framework, Seq[String]], parallel: Boolean): Task[Output] =
 	{
@@ -91,7 +99,7 @@ object Tests
 		def partApp(actions: Iterable[ClassLoader => Unit]) = actions.toSeq map {a => () => a(loader) }
 
 		val (frameworkSetup, runnables, frameworkCleanup) =
-			TestFramework.testTasks(frameworks, loader, tests, log, testListeners, arguments)
+			TestFramework.testTasks(frameworks, loader, tests, noTestsMessage, log, testListeners, arguments)
 
 		val setupTasks = fj(partApp(userSetup) :+ frameworkSetup)
 		val mainTasks = if(parallel) makeParallel(runnables, setupTasks).toSeq.join else makeSerial(runnables, setupTasks)

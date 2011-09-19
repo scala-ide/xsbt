@@ -8,6 +8,15 @@ package sbt
 	import Types.some
 
 final case class Scope(project: ScopeAxis[Reference], config: ScopeAxis[ConfigKey], task: ScopeAxis[AttributeKey[_]], extra: ScopeAxis[AttributeMap])
+{
+	def in(project: Reference, config: ConfigKey): Scope = copy(project = Select(project), config = Select(config))
+	def in(config: ConfigKey, task: AttributeKey[_]): Scope = copy(config = Select(config), task = Select(task))
+	def in(project: Reference, task: AttributeKey[_]): Scope = copy(project = Select(project), task = Select(task))
+	def in(project: Reference, config: ConfigKey, task: AttributeKey[_]): Scope = copy(project = Select(project), config = Select(config), task = Select(task))
+	def in(project: Reference): Scope = copy(project = Select(project))
+	def in(config: ConfigKey): Scope = copy(config = Select(config))
+	def in(task: AttributeKey[_]): Scope = copy(task = Select(task))
+}
 object Scope
 {
 	val ThisScope = Scope(This, This, This, This)
@@ -88,17 +97,18 @@ object Scope
 			case BuildRef(uri) => BuildRef(resolveBuild(current, uri))
 		}
 
-	def display(config: ConfigKey): String = if(config.name == "compile") "" else config.name + ":"
-	def display(scope: Scope, sep: String): String = 
+	def display(config: ConfigKey): String = config.name + ":"
+	def display(scope: Scope, sep: String): String = display(scope, sep, ref => Project.display(ref) + "/")
+	def display(scope: Scope, sep: String, showProject: Reference => String): String = 
 	{
 			import scope.{project, config, task, extra}
-		val projectPrefix = project.foldStrict(Project.display, "*", ".")
+		val projectPrefix = project.foldStrict(showProject, "*/", "./")
 		val configPrefix = config.foldStrict(display, "*:", ".:")
 		val taskPostfix = task.foldStrict(x => ("for " + x.label) :: Nil, Nil, Nil)
 		val extraPostfix = extra.foldStrict(_.entries.map( _.toString ).toList, Nil, Nil)
 		val extras = taskPostfix ::: extraPostfix
 		val postfix = if(extras.isEmpty) "" else extras.mkString("(", ", ", ")")
-		projectPrefix + "/" + configPrefix + sep + postfix
+		projectPrefix + configPrefix + sep + postfix
 	}
 
 	def parseScopedKey(command: String): (Scope, String) =

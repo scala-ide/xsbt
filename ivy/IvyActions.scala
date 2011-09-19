@@ -19,16 +19,17 @@ import core.report.{ArtifactDownloadReport,ResolveReport}
 import core.resolve.ResolveOptions
 import core.retrieve.RetrieveOptions
 import plugins.parser.m2.{PomModuleDescriptorParser,PomModuleDescriptorWriter}
-import plugins.resolver.DependencyResolver
+import plugins.resolver.{BasicResolver, DependencyResolver}
 
 final class DeliverConfiguration(val deliverIvyPattern: String, val status: String, val configurations: Option[Seq[Configuration]], val logging: UpdateLogging.Value)
-final class PublishConfiguration(val ivyFile: Option[File], val resolverName: String, val artifacts: Map[Artifact, File], val logging: UpdateLogging.Value)
+final class PublishConfiguration(val ivyFile: Option[File], val resolverName: String, val artifacts: Map[Artifact, File], val checksums: Seq[String], val logging: UpdateLogging.Value)
 
 final class UpdateConfiguration(val retrieve: Option[RetrieveConfiguration], val missingOk: Boolean, val logging: UpdateLogging.Value)
 final class RetrieveConfiguration(val retrieveDirectory: File, val outputPattern: String)
-final case class MakePomConfiguration(file: File, configurations: Option[Iterable[Configuration]] = None, extra: NodeSeq = NodeSeq.Empty, process: XNode => XNode = n => n, filterRepositories: MavenRepository => Boolean = _ => true, allRepositories: Boolean)
+final case class MakePomConfiguration(file: File, moduleInfo: ModuleInfo, configurations: Option[Iterable[Configuration]] = None, extra: NodeSeq = NodeSeq.Empty, process: XNode => XNode = n => n, filterRepositories: MavenRepository => Boolean = _ => true, allRepositories: Boolean)
 	// exclude is a map on a restricted ModuleID
-final case class GetClassifiersConfiguration(id: ModuleID, modules: Seq[ModuleID], classifiers: Seq[String], exclude: Map[ModuleID, Set[String]], configuration: UpdateConfiguration, ivyScala: Option[IvyScala])
+final case class GetClassifiersConfiguration(module: GetClassifiersModule, exclude: Map[ModuleID, Set[String]], configuration: UpdateConfiguration, ivyScala: Option[IvyScala])
+final case class GetClassifiersModule(id: ModuleID, modules: Seq[ModuleID], configurations: Seq[Configuration], classifiers: Seq[String])
 
 /** Configures logging during an 'update'.  `level` determines the amount of other information logged.
 * `Full` is the default and logs the most.
@@ -65,9 +66,9 @@ object IvyActions
 	/** Creates a Maven pom from the given Ivy configuration*/
 	def makePom(module: IvySbt#Module, configuration: MakePomConfiguration, log: Logger)
 	{
-		import configuration.{allRepositories, configurations, extra, file, filterRepositories, process}
+		import configuration.{allRepositories, moduleInfo, configurations, extra, file, filterRepositories, process}
 		module.withModule(log) { (ivy, md, default) =>
-			(new MakePom).write(ivy, md, configurations, extra, process, filterRepositories, allRepositories, file)
+			(new MakePom(log)).write(ivy, md, moduleInfo, configurations, extra, process, filterRepositories, allRepositories, file)
 			log.info("Wrote " + file.getAbsolutePath)
 		}
 	}
@@ -91,11 +92,21 @@ object IvyActions
 		import configuration._
 		module.withModule(log) { case (ivy, md, default) =>
 			val resolver = ivy.getSettings.getResolver(resolverName)
+			if(resolver eq null) error("Undefined resolver '" + resolverName + "'")
 			val ivyArtifact = ivyFile map { file => (MDArtifact.newIvyArtifact(md), file) }
 			val is = crossIvyScala(module.moduleSettings)
 			val as = mapArtifacts(md, is, artifacts) ++ ivyArtifact.toList
-			publish(md, as, resolver, overwrite = true)
+			withChecksums(resolver, checksums) { publish(md, as, resolver, overwrite = true) }
 		}
+	}
+	private[this] def withChecksums[T](resolver: DependencyResolver, checksums: Seq[String])(act: => T): T =
+		resolver match { case br: BasicResolver => withChecksums(br, checksums)(act); case _ => act }
+	private[this] def withChecksums[T](resolver: BasicResolver, checksums: Seq[String])(act: => T): T =
+	{
+		val previous = resolver.getChecksumAlgorithms
+		resolver.setChecksums(checksums mkString ",")
+		try { act }
+		finally { resolver.setChecksums(previous mkString ",") }
 	}
 	private def crossIvyScala(moduleSettings: ModuleSettings): Option[IvyScala] =
 		moduleSettings match {
@@ -119,7 +130,9 @@ object IvyActions
 			val (report, err) = resolve(configuration.logging)(ivy, md, default)
 			err match
 			{
-				case Some(x) if !configuration.missingOk => throw x
+				case Some(x) if !configuration.missingOk =>
+					processUnresolved(x, log)
+					throw x
 				case _ =>
 					val cachedDescriptor = ivy.getSettings.getResolutionCacheManager.getResolvedIvyFileInCache(md.getModuleRevisionId)
 					val uReport = IvyRetrieve.updateReport(report, cachedDescriptor)
@@ -131,23 +144,47 @@ object IvyActions
 			}
 		}
 
+	def processUnresolved(err: ResolveException, log: Logger)
+	{
+		val withExtra = err.failed.filter(!_.extraAttributes.isEmpty)
+		if(!withExtra.isEmpty)
+		{
+			log.warn("\n\tNote: Some unresolved dependencies have extra attributes.  Check that these dependencies exist with the requested attributes.")
+			withExtra foreach { id => log.warn("\t\t" + id) }
+			log.warn("")
+		}
+	}
+	def groupedConflicts[T](moduleFilter: ModuleFilter, grouping: ModuleID => T)(report: UpdateReport): Map[T, Set[String]] =
+		report.configurations.flatMap { confReport =>
+			val evicted = confReport.evicted.filter(moduleFilter)
+			val evictedSet = evicted.map( m => (m.organization, m.name) ).toSet
+			val conflicted = confReport.allModules.filter( mod => evictedSet( (mod.organization, mod.name) ) )
+			grouped(grouping)(conflicted ++ evicted)
+		} toMap;
+
+	def grouped[T](grouping: ModuleID => T)(mods: Seq[ModuleID]): Map[T, Set[String]] =
+		mods groupBy(grouping) mapValues(_.map(_.revision).toSet)
+
+
 	def transitiveScratch(ivySbt: IvySbt, label: String, config: GetClassifiersConfiguration, log: Logger): UpdateReport =
 	{
-			import config.{configuration => c, id, ivyScala, modules => deps}
+			import config.{configuration => c, ivyScala, module => mod}
+			import mod.{configurations => confs, id, modules => deps}
 		val base = restrictedCopy(id).copy(name = id.name + "$" + label)
-		val module = new ivySbt.Module(InlineConfiguration(base, deps).copy(ivyScala = ivyScala))
+		val module = new ivySbt.Module(InlineConfiguration(base, ModuleInfo(base.name), deps).copy(ivyScala = ivyScala))
 		val report = update(module, c, log)
-		val newConfig = config.copy(modules = report.allModules)
+		val newConfig = config.copy(module = mod.copy(modules = report.allModules))
 		updateClassifiers(ivySbt, newConfig, log)
 	}
 	def updateClassifiers(ivySbt: IvySbt, config: GetClassifiersConfiguration, log: Logger): UpdateReport =
 	{
-			import config.{configuration => c, _}
+			import config.{configuration => c, module => mod, _}
+			import mod.{configurations => confs, _}
 		assert(!classifiers.isEmpty, "classifiers cannot be empty")
 		val baseModules = modules map restrictedCopy
 		val deps = baseModules.distinct flatMap classifiedArtifacts(classifiers, exclude)
 		val base = restrictedCopy(id).copy(name = id.name + classifiers.mkString("$","_",""))
-		val module = new ivySbt.Module(InlineConfiguration(base, deps).copy(ivyScala = ivyScala))
+		val module = new ivySbt.Module(InlineConfiguration(base, ModuleInfo(base.name), deps).copy(ivyScala = ivyScala, configurations = confs))
 		val upConf = new UpdateConfiguration(c.retrieve, true, c.logging)
 		update(module, upConf, log)
 	}
@@ -165,7 +202,7 @@ object IvyActions
 	def extractExcludes(report: UpdateReport): Map[ModuleID, Set[String]] =
 		report.allMissing flatMap { case (_, mod, art) => art.classifier.map { c => (restrictedCopy(mod), c) } } groupBy(_._1) map { case (mod, pairs) => (mod, pairs.map(_._2).toSet) }
 
-	private[this] def restrictedCopy(m: ModuleID) = ModuleID(m.organization, m.name, m.revision, crossVersion = m.crossVersion)
+	private[this] def restrictedCopy(m: ModuleID) = ModuleID(m.organization, m.name, m.revision, crossVersion = m.crossVersion, extraAttributes = m.extraAttributes, configurations = m.configurations)
 	private[this] def resolve(logging: UpdateLogging.Value)(ivy: Ivy, module: DefaultModuleDescriptor, defaultConf: String): (ResolveReport, Option[ResolveException]) =
 	{
 		val resolveOptions = new ResolveOptions
@@ -173,7 +210,11 @@ object IvyActions
 		val resolveReport = ivy.resolve(module, resolveOptions)
 		val err =
 			if(resolveReport.hasError)
-				Some(new ResolveException(resolveReport.getAllProblemMessages.toArray.map(_.toString).distinct))
+			{
+				val messages = resolveReport.getAllProblemMessages.toArray.map(_.toString).distinct
+				val failed = resolveReport.getUnresolvedDependencies.map(node => IvyRetrieve.toModuleID(node.getId))
+				Some(new ResolveException(messages, failed))
+			}
 			else None
 		(resolveReport, err)
 	}
@@ -224,4 +265,4 @@ object IvyActions
 		}
 
 }
-final class ResolveException(messages: Seq[String]) extends RuntimeException(messages.mkString("\n"))
+final class ResolveException(val messages: Seq[String], val failed: Seq[ModuleID]) extends RuntimeException(messages.mkString("\n"))

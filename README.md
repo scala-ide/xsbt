@@ -4,9 +4,9 @@
 [Setup]: https://github.com/harrah/xsbt/wiki/Setup
 [video of a demo]: http://vimeo.com/20263617
 
-# sbt 0.10
+# sbt 0.11
 
-This is the 0.10.x series of sbt.  See [Setup] for getting started with the latest binary release or see below to build from source.
+This is the 0.11.x series of sbt.  See [Setup] for getting started with the latest binary release or see below to build from source.
 
 The previous stable release of sbt was 0.7.7, which was hosted on [Google Code].
 
@@ -14,29 +14,38 @@ There is a [video of a demo] given at the [Northeast Scala Symposium] that gives
 
 # Build from source
 
-To build from source, get the latest stable version of sbt 0.10.x (see [Setup]) and get the code.
+1. Install the current stable binary release of sbt (see [Setup]), which will be used to build sbt from source.
+2. Get the source code.
 
-	$ git clone git://github.com/harrah/xsbt.git
-	$ cd xsbt
+		$ git clone git://github.com/harrah/xsbt.git
+		$ cd xsbt
 
-The initial branch is the development branch 0.10, which contains the latest code for the 0.10.x series.
+3. The initial branch is the development branch 0.11, which contains the latest code for the 0.11.x series.  To build a specific release or commit, switch to the associated tag.  The tag for the latest stable release is v0.10.1:
 
-The latest tag for 0.10.x is 0.10.0:
+		$ git checkout v0.10.1
 
-	$ git checkout v0.10.0
+4. To build the launcher, publish all components locally, and build API and SXR documentation:
 
-To build the launcher, publish all components locally, and build API and SXR documentation:
+		$ sbt build-all
 
-	$ sbt build-all
+	Alternatively, the individual commands run by `build-all` may be executed directly:
 
-The individual commands are
+		$ sbt publish-local proguard sxr doc
 
-   $ sbt publish-local proguard sxr doc
+5. To use this locally built version of sbt, copy your stable ~/bin/sbt script to ~/bin/xsbt and change it to use the launcher jar in `<xsbt>/target/`.  For the v0.10.1 tag, the full location is:
 
-Copy your stable ~/bin/sbt script to ~/bin/xsbt and change it to use the launcher at:
+		<xsbt>/target/sbt-launch-0.10.1.jar
 
-	<xsbt>/target/sbt-launch-0.10.0.jar
+	If using the 0.11 development branch, the launcher is at:
 
-If using the 0.10 development branch, the launcher is at:
+		<xsbt>/target/sbt-launch-0.11.0-SNAPSHOT.jar
 
-	<xsbt>/target/sbt-launch-0.10.1-SNAPSHOT.jar
+## Modifying sbt
+
+When developing sbt itself, there is no need to run `build-all`, since this generates documentation as well.  For the fastest turnaround time for checking compilation only, run `compile`.
+
+To use your modified version of sbt in a project locally, run `publish-local`.  If you have modified the launcher, also run `proguard`.
+
+After each `publish-local`, clean the `project/boot/` directory in the project in which you want to use the locally built sbt.  Alternatively, if sbt is running and the launcher hasn't changed, run `reboot full` to have sbt do this for you.
+
+If a project has `project/build.properties` defined, either delete the file or change `sbt.version` to `0.11.0-SNAPSHOT`.

@@ -15,6 +15,7 @@ object Sxr
 	    val sxrVersion = VersionComp.versionMap("sxr").getOrElse(sv, error("Unsupported Scala version " + sv))
 	    deps :+ "org.scala-tools.sxr" %% "sxr" % sxrVersion % sxrConf.name
 	  }
+		//libraryDependencies += "org.scala-tools.sxr" % "sxr_2.9.0" % "0.2.7" % sxrConf.name
 	)
 	def inSxrSettings = Seq(
 		managedClasspath <<= update map { _.matching( configurationFilter(sxrConf.name) ).classpath },
@@ -29,6 +30,6 @@ object Sxr
 		IO.createDirectory(out)
 		val comp = new compiler.RawCompiler(si, cpOpts, s.log)
 		comp(srcs, cp.files, out, opts)
-		out
+		out.getParentFile / (out.getName + ".sxr")
 	}
 }

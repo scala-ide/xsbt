@@ -22,12 +22,8 @@ object ScalaArtifacts
 
 import ScalaArtifacts._
 
-final case class IvyScala(scalaVersion: String, configurations: Iterable[Configuration], checkExplicit: Boolean, filterImplicit: Boolean, overrideScalaVersion: Boolean)
-{
-	// otherwise, Ivy produces the error: "impossible to get artifacts when data has not been loaded"
-	//   which may be related to sbt's custom conflict manager, to IVY-987, or both
-	assert(if(overrideScalaVersion) checkExplicit else true, "Explicit Scala version checking cannot be disabled when forcing the Scala version.")
-}
+final case class IvyScala(scalaVersion: String, configurations: Iterable[Configuration], checkExplicit: Boolean, filterImplicit: Boolean, overrideScalaVersion: Boolean, substituteCross: ModuleID => ModuleID)
+
 private object IvyScala
 {
 	/** Performs checks/adds filters on Scala dependencies (if enabled in IvyScala). */
@@ -90,7 +86,7 @@ private object IvyScala
 	}
 	/** Creates an ExcludeRule that excludes artifacts with the given module organization and name for
 	* the given configurations. */
-	private def excludeRule(organization: String, name: String, configurationNames: Iterable[String]): ExcludeRule =
+	private[sbt] def excludeRule(organization: String, name: String, configurationNames: Iterable[String]): ExcludeRule =
 	{
 		val artifact = new ArtifactId(ModuleId.newInstance(organization, name), "*", "jar", "*")
 		val rule = new DefaultExcludeRule(artifact, ExactPatternMatcher.INSTANCE, emptyMap[AnyRef,AnyRef])

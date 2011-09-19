@@ -222,7 +222,8 @@ object IO
 		try { action(dir) }
 		finally { delete(dir) }
 	}
-	def createTemporaryDirectory: File =
+	def createTemporaryDirectory: File = createUniqueDirectory(temporaryDirectory)
+	def createUniqueDirectory(baseDirectory: File): File =
 	{
 		def create(tries: Int): File =
 		{
@@ -231,7 +232,7 @@ object IO
 			else
 			{
 				val randomName = "sbt_" + java.lang.Integer.toHexString(random.nextInt)
-				val f = new File(temporaryDirectory, randomName)
+				val f = new File(baseDirectory, randomName)
 
 				try { createDirectory(f); f }
 				catch { case e: Exception => create(tries + 1) }
@@ -617,7 +618,7 @@ object IO
 		(new URI(dirStr)).normalize
 	}
 	/** Converts the given File to a URI.  If the File is relative, the URI is relative, unlike File.toURI*/
-	def toURI(f: File): URI  =  if(f.isAbsolute) f.toURI else new URI(f.getPath)
+	def toURI(f: File): URI  =  if(f.isAbsolute) f.toURI else new URI(normalizeName(f.getPath))
 	def resolve(base: File, f: File): File  =
 	{
 		assertAbsolute(base)
@@ -627,4 +628,6 @@ object IO
 	}
 	def assertAbsolute(f: File) = assert(f.isAbsolute, "Not absolute: " + f)
 	def assertAbsolute(uri: URI) = assert(uri.isAbsolute, "Not absolute: " + uri)
+
+	def parseClasspath(s: String): Seq[File] = IO.pathSplit(s).map(new File(_)).toSeq
 }

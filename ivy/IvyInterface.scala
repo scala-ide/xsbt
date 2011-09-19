@@ -9,9 +9,13 @@ import scala.xml.NodeSeq
 import org.apache.ivy.plugins.resolver.{DependencyResolver, IBiblioResolver}
 import org.apache.ivy.util.url.CredentialsStore
 
-final case class ModuleID(organization: String, name: String, revision: String, configurations: Option[String] = None, isChanging: Boolean = false, isTransitive: Boolean = true, explicitArtifacts: Seq[Artifact] = Nil, extraAttributes: Map[String,String] = Map.empty, crossVersion: Boolean = false)
+final case class ModuleID(organization: String, name: String, revision: String, configurations: Option[String] = None, isChanging: Boolean = false, isTransitive: Boolean = true, explicitArtifacts: Seq[Artifact] = Nil, exclusions: Seq[ExclusionRule] = Nil, extraAttributes: Map[String,String] = Map.empty, crossVersion: Boolean = false)
 {
-	override def toString = organization + ":" + name + ":" + revision + (configurations match { case Some(s) => ":" + s; case None => "" })
+	override def toString =
+		organization + ":" + name + ":" + revision +
+		(configurations match { case Some(s) => ":" + s; case None => "" }) +
+		(if(extraAttributes.isEmpty) "" else " " + extraString)
+	def extraString = extraAttributes.map { case (k,v) => k + "=" + v } mkString("(",", ",")")
 	def cross(v: Boolean) = copy(crossVersion = v)
 	// () required for chaining
 	def notTransitive() = intransitive()
@@ -20,6 +24,8 @@ final case class ModuleID(organization: String, name: String, revision: String, 
 	def from(url: String) = artifacts(Artifact(name, new URL(url)))
 	def classifier(c: String) = artifacts(Artifact(name, c))
 	def artifacts(newArtifacts: Artifact*) = copy(explicitArtifacts = newArtifacts ++ this.explicitArtifacts)
+	def excludeAll(rules: ExclusionRule*) = copy(exclusions = this.exclusions ++ rules)
+	def exclude(org: String, name: String) = excludeAll(ExclusionRule(org, name))
 	def extra(attributes: (String,String)*) = copy(extraAttributes = this.extraAttributes ++ ModuleID.checkE(attributes))
 	def sources() = artifacts(Artifact.sources(name))
 	def javadoc() = artifacts(Artifact.javadoc(name))
@@ -34,6 +40,16 @@ object ModuleID
 		for ( (key, value) <- attributes) yield
 			if(key.startsWith("e:")) (key, value) else ("e:" + key, value)
 }
+/** Additional information about a project module */
+case class ModuleInfo(nameFormal: String, description: String = "", homepage: Option[URL] = None, startYear: Option[Int] = None, licenses: Seq[(String, URL)] = Nil, organizationName: String = "", organizationHomepage: Option[URL] = None)
+{
+	def formally(name: String) = copy(nameFormal = name)
+	def describing(desc: String, home: Option[URL]) = copy(description = desc, homepage = home)
+	def licensed(lics: (String, URL)*) = copy(licenses = lics)
+	def organization(name: String, home: Option[URL]) = copy(organizationName = name, organizationHomepage = home)
+}
+/** Rule to exclude unwanted dependencies pulled in transitively by a module. */
+case class ExclusionRule(organization: String = "*", name: String = "*", artifact: String = "*", configurations: Seq[String] = Nil)
 sealed trait Resolver
 {
 	def name: String
@@ -155,6 +171,7 @@ import Resolver._
 object ScalaToolsReleases extends MavenRepository(ScalaToolsReleasesName, ScalaToolsReleasesRoot)
 object ScalaToolsSnapshots extends MavenRepository(ScalaToolsSnapshotsName, ScalaToolsSnapshotsRoot)
 object DefaultMavenRepository extends MavenRepository("public", IBiblioResolver.DEFAULT_M2_ROOT)
+object JavaNet2Repository extends MavenRepository(JavaNet2RepositoryName, JavaNet2RepositoryRoot)
 object JavaNet1Repository extends JavaNet1Repository
 sealed trait JavaNet1Repository extends Resolver
 {
@@ -167,6 +184,8 @@ object Resolver
 	val ScalaToolsSnapshotsName = "Scala-Tools Maven2 Snapshots Repository"
 	val ScalaToolsReleasesRoot = "http://scala-tools.org/repo-releases"
 	val ScalaToolsSnapshotsRoot = "http://scala-tools.org/repo-snapshots"
+	val JavaNet2RepositoryName = "java.net Maven2 Repository"
+	val JavaNet2RepositoryRoot = "http://download.java.net/maven/2"
 
 	/** Add the local, Maven Central, and Scala Tools releases repositories to the user repositories.  */
 	def withDefaultResolvers(userResolvers: Seq[Resolver]): Seq[Resolver] =
@@ -260,20 +279,25 @@ object Resolver
 	/** Resolves the ivy file and artifact patterns in `patterns` against the given base. */
 	private def resolvePatterns(base: String, basePatterns: Patterns): Patterns =
 	{
-		val normBase = base.replace('\\', '/')
-		def resolve(pattern: String) = if(normBase.endsWith("/") || pattern.startsWith("/")) normBase +pattern else normBase + "/" + pattern
-		def resolveAll(patterns: Seq[String]) = patterns.map(resolve)
+		def resolveAll(patterns: Seq[String]) = patterns.map(p => resolvePattern(base, p))
 		Patterns(resolveAll(basePatterns.ivyPatterns), resolveAll(basePatterns.artifactPatterns), basePatterns.isMavenCompatible)
 	}
-	
+	private[sbt] def resolvePattern(base: String, pattern: String): String = 
+	{
+		val normBase = base.replace('\\', '/')
+		if(normBase.endsWith("/") || pattern.startsWith("/")) normBase + pattern else normBase + "/" + pattern
+	}
 	def defaultFileConfiguration = FileConfiguration(true, None)
 	def mavenStylePatterns = Patterns(Nil, mavenStyleBasePattern :: Nil, true)
 	def ivyStylePatterns = defaultIvyPatterns//Patterns(Nil, Nil, false)
 
 	def defaultPatterns = mavenStylePatterns
-	def mavenStyleBasePattern = "[organisation]/[module]/[revision]/[artifact]-[revision](-[classifier]).[ext]"
-	def localBasePattern = "[organisation]/[module]/[revision]/[type]s/[artifact](-[classifier]).[ext]"
+	def mavenStyleBasePattern = "[organisation]/[module](_[scalaVersion])(_[sbtVersion])/[revision]/[artifact]-[revision](-[classifier]).[ext]"
+	def localBasePattern = "[organisation]/[module]/" + PluginPattern + "[revision]/[type]s/[artifact](-[classifier]).[ext]"
+	def defaultRetrievePattern = "[type]s/[organisation]/[module]/" + PluginPattern + "[artifact](-[revision])(-[classifier]).[ext]"
+	final val PluginPattern = "(scala_[scalaVersion]/)(sbt_[sbtVersion]/)"
 
+	def mavenLocal = MavenRepository("Maven2 Local", (new File(Path.userHome, ".m2/repository/")).toURI.toURL.toExternalForm)
 	def defaultLocal = defaultUserFileRepository("local")
 	def defaultShared = defaultUserFileRepository("shared")
 	def defaultUserFileRepository(id: String) =
@@ -357,17 +381,17 @@ final case class Artifact(name: String, `type`: String, extension: String, class
 
 object Artifact
 {
-	def apply(name: String): Artifact = Artifact(name, defaultType, defaultExtension, None, Nil, None)
-	def apply(name: String, extra: Map[String,String]): Artifact = Artifact(name, defaultType, defaultExtension, None, Nil, None, extra)
-	def apply(name: String, classifier: String): Artifact = Artifact(name, defaultType, defaultExtension, Some(classifier), Nil, None)
+	def apply(name: String): Artifact = Artifact(name, DefaultType, DefaultExtension, None, Nil, None)
+	def apply(name: String, extra: Map[String,String]): Artifact = Artifact(name, DefaultType, DefaultExtension, None, Nil, None, extra)
+	def apply(name: String, classifier: String): Artifact = Artifact(name, DefaultType, DefaultExtension, Some(classifier), Nil, None)
 	def apply(name: String, `type`: String, extension: String): Artifact = Artifact(name, `type`, extension, None, Nil, None)
 	def apply(name: String, `type`: String, extension: String, classifier: String): Artifact = Artifact(name, `type`, extension, Some(classifier), Nil, None)
-	def apply(name: String, url: URL): Artifact =Artifact(name, extract(url, defaultType), extract(url, defaultExtension), None, Nil, Some(url))
+	def apply(name: String, url: URL): Artifact =Artifact(name, extract(url, DefaultType), extract(url, DefaultExtension), None, Nil, Some(url))
 	def apply(name: String, `type`: String, extension: String, classifier: Option[String], configurations: Iterable[Configuration], url: Option[URL]): Artifact =
 		Artifact(name, `type`, extension, classifier, configurations, url, Map.empty)
 
-	val defaultExtension = "jar"
-	val defaultType = "jar"
+	val DefaultExtension = "jar"
+	val DefaultType = "jar"
 
 	def sources(name: String) = classified(name, SourceClassifier)
 	def javadoc(name: String) = classified(name, DocClassifier)
@@ -375,6 +399,8 @@ object Artifact
 
 	val DocClassifier = "javadoc"
 	val SourceClassifier = "sources"
+	val DocType = "doc"
+	val SourceType = "src"
 	val PomType = "pom"
 
 	def extract(url: URL, default: String): String = extract(url.toString, default)
@@ -391,7 +417,7 @@ object Artifact
 		val name = file.getName
 		val i = name.lastIndexOf('.')
 		val base = if(i >= 0) name.substring(0, i) else name
-		Artifact(base, extract(name, defaultType), extract(name, defaultExtension), None, Nil, Some(file.toURI.toURL))
+		Artifact(base, extract(name, DefaultType), extract(name, DefaultExtension), None, Nil, Some(file.toURI.toURL))
 	}
 	def artifactName(scalaVersion: String, module: ModuleID, artifact: Artifact): String =
 	{
@@ -403,11 +429,11 @@ object Artifact
 	def cross(enable: Boolean, scalaVersion: String): String = if(enable) "_" + scalaVersion else ""
 
 	val classifierConfMap = Map(SourceClassifier -> Sources, DocClassifier -> Docs)
-	val classifierTypeMap = Map(SourceClassifier -> "src", DocClassifier -> "doc")
+	val classifierTypeMap = Map(SourceClassifier -> SourceType, DocClassifier -> DocType)
 	def classifierConf(classifier: String): Configuration = classifierConfMap.getOrElse(classifier, Optional)	
-	def classifierType(classifier: String): String = classifierTypeMap.getOrElse(classifier, defaultType)
+	def classifierType(classifier: String): String = classifierTypeMap.getOrElse(classifier, DefaultType)
 	def classified(name: String, classifier: String): Artifact =
-		Artifact(name, classifierType(classifier), defaultExtension, Some(classifier), classifierConf(classifier) :: Nil, None)
+		Artifact(name, classifierType(classifier), DefaultExtension, Some(classifier), classifierConf(classifier) :: Nil, None)
 }
 final case class ModuleConfiguration(organization: String, name: String, revision: String, resolver: Resolver)
 object ModuleConfiguration

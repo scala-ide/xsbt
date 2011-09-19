@@ -7,7 +7,7 @@ private object VersionComp {
 	val versionMap = Map(
 	    "scalacheck" -> Map("2.8.1" -> "1.8", "2.9.0-1" -> "1.9", "2.10.0-SNAPSHOT" -> "1.9"),
 	    "sbinary" -> Map("2.8.1" -> "0.4.0", "2.9.0" -> "0.4.0", "2.9.0-1" -> "0.4.0", "2.10.0-SNAPSHOT" -> "0.4.0"),
-	    "sxr" -> Map("2.8.1" -> "0.2.7", "2.9.0-1" -> "0.2.7-SNAPSHOT", "2.10.0-SNAPSHOT" -> "0.2.7-SNAPSHOT")
+	    "sxr" -> Map("2.8.1" -> "0.2.7", "2.9.0-1" -> "0.2.7", "2.10.0-SNAPSHOT" -> "0.2.7")
 	    )
 }
 
@@ -20,11 +20,9 @@ object Util
 	
 	def noPublish(p: Project) = p.copy(settings = noRemotePublish(p.settings))
 	def noRemotePublish(in: Seq[Setting[_]]) = in filterNot { s => s.key == deliver || s.key == publish }
-	lazy val noExtra = projectDependencies ~= { _.map(_.copy(extraAttributes = Map.empty)) } // not sure why this is needed
-	// not needed after moving to 0.10.1
-	lazy val fixArtifact = artifact in (Compile, packageSrc) ~= (_.copy(configurations = Optional :: Nil))
+	lazy val noExtra = projectDependencies ~= { _.map(_.copy(extraAttributes = Map.empty)) } // remove after 0.10.2
 
-	def project(path: File, nameString: String) = Project(normalize(nameString), path) settings( name := nameString, noExtra, fixArtifact )
+	def project(path: File, nameString: String) = Project(normalize(nameString), path) settings( name := nameString, noExtra )
 	def baseProject(path: File, nameString: String) = project(path, nameString) settings( base : _*)
 	def testedBaseProject(path: File, nameString: String) = baseProject(path, nameString) settings( testDependencies : _*)
 	
@@ -40,9 +38,9 @@ object Util
 	  }
 	)
 	
-	/*def testDependencies = libraryDependencies ++= Seq(
-		"org.scala-tools.testing" %% "scalacheck" % "1.8" % "test",
-		"org.scala-tools.testing" %% "specs" % "1.6.8" % "test"
+/*	def testDependencies = libraryDependencies ++= Seq(
+		"org.scala-tools.testing" % "scalacheck_2.9.0-1" % "1.9" % "test",
+		"org.scala-tools.testing" % "specs_2.9.0-1" % "1.6.8" % "test"
 	)*/
 
 	lazy val minimalSettings: Seq[Setting[_]] = Defaults.paths ++ Seq[Setting[_]](crossTarget <<= target.identity, name <<= thisProject(_.id))
@@ -100,6 +98,8 @@ object Common
 	    deps :+ ("org.scala-tools.sbinary" %% "sbinary" % sbinaryVersion)
 	  }
 	}
+
+//	lazy val sbinary = lib("org.scala-tools.sbinary" % "sbinary_2.9.0" % "0.4.0" )
 	lazy val scalaCompiler = libraryDependencies <+= scalaVersion("org.scala-lang" % "scala-compiler" % _ )
 }
 object Licensed

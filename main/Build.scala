@@ -9,7 +9,7 @@ package sbt
 	import complete.DefaultParsers.validID
 	import Compiler.Compilers
 	import Project.{ScopedKey, Setting}
-	import Keys.Streams
+	import Keys.{globalBaseDirectory, Streams}
 	import Scope.GlobalScope
 	import scala.annotation.tailrec
 
@@ -28,7 +28,9 @@ trait Plugin
 
 object Build
 {
-	val default: Build = new Build { override def projectDefinitions(base: File) = Project("default", base) :: Nil }
+	val default: Build = new Build { override def projectDefinitions(base: File) = defaultProject(base) :: Nil }
+	def defaultID(base: File): String = "default-" + Hash.trimHashString(base.getAbsolutePath, 6)
+	def defaultProject(base: File): Project = Project(defaultID(base), base).settings(Keys.organization := "default")
 
 	def data[T](in: Seq[Attributed[T]]): Seq[T] = in.map(_.data)
 	def analyzed(in: Seq[Attributed[_]]): Seq[inc.Analysis] = in.flatMap{ _.metadata.get(Keys.analysis) }
@@ -44,9 +46,28 @@ object RetrieveUnit
 			case "http" | "https" => Some { () => downloadAndExtract(base, tmp); tmp }
 			case "file" => 
 				val f = new File(base)
-				if(f.isDirectory) Some(() => f) else None
+				if(f.isDirectory)
+				{
+					val finalDir = if (!f.canWrite) retrieveRODir(f, tmp) else f
+					Some(() => finalDir)
+				}
+				else None
 			case _ => None
 		}
+	}
+	def retrieveRODir(base: File, tempDir: File): File =
+	{
+		if (!tempDir.exists)
+		{
+			try {
+				IO.copyDirectory(base, tempDir)
+			} catch {
+				case e =>
+					IO.delete(tempDir)
+					throw e
+			}
+		}
+		tempDir
 	}
 	def downloadAndExtract(base: URI, tempDir: File): Unit = if(!tempDir.exists) IO.unzipURL(base.toURL, tempDir)
 	def temporary(tempDir: File, uri: URI): File = new File(tempDir, Hash.halve(hash(uri)))
@@ -79,30 +100,33 @@ object RetrieveUnit
 }
 object EvaluateConfigurations
 {
-	def apply(eval: Eval, srcs: Seq[File], imports: Seq[String]): Seq[Setting[_]] =
-		srcs.sortBy(_.getName) flatMap { src =>  evaluateConfiguration(eval, src, imports) }
-	def evaluateConfiguration(eval: Eval, src: File, imports: Seq[String]): Seq[Setting[_]] =
+	def apply(eval: Eval, srcs: Seq[File], imports: Seq[String]): ClassLoader => Seq[Setting[_]] =
+		flatten(srcs.sortBy(_.getName) map { src =>  evaluateConfiguration(eval, src, imports) })
+	def evaluateConfiguration(eval: Eval, src: File, imports: Seq[String]): ClassLoader => Seq[Setting[_]] =
 		evaluateConfiguration(eval, src.getPath, IO.readLines(src), imports, 0)
-	def evaluateConfiguration(eval: Eval, name: String, lines: Seq[String], imports: Seq[String], offset: Int): Seq[Setting[_]] =
+	def evaluateConfiguration(eval: Eval, name: String, lines: Seq[String], imports: Seq[String], offset: Int): ClassLoader => Seq[Setting[_]] =
 	{
 		val (importExpressions, settingExpressions) = splitExpressions(lines)
-		addOffset(offset, settingExpressions) flatMap { case (settingExpression,line) =>
+		val settings = addOffset(offset, settingExpressions) map { case (settingExpression,line) =>
 			evaluateSetting(eval, name, (imports.map(s => (s, -1)) ++ addOffset(offset, importExpressions)), settingExpression, line)
 		}
+		flatten(settings)
 	}
+	def flatten(mksettings: Seq[ClassLoader => Seq[Setting[_]]]): ClassLoader => Seq[Setting[_]] =
+		loader => mksettings.flatMap(_ apply loader)
 	def addOffset(offset: Int, lines: Seq[(String,Int)]): Seq[(String,Int)] =
 		lines.map { case (s, i) => (s, i + offset) }
 
-	def evaluateSetting(eval: Eval, name: String, imports: Seq[(String,Int)], expression: String, line: Int): Seq[Setting[_]] =
+	def evaluateSetting(eval: Eval, name: String, imports: Seq[(String,Int)], expression: String, line: Int): ClassLoader => Seq[Setting[_]] =
 	{
 		val result = try {
 			eval.eval(expression, imports = new EvalImports(imports, name), srcName = name, tpeName = Some("sbt.Project.SettingsDefinition"), line = line)
 		} catch {
 			case e: sbt.compiler.EvalException => throw new MessageOnlyException(e.getMessage)
 		}
-		result.value.asInstanceOf[Project.SettingsDefinition].settings
+		loader => result.getValue(loader).asInstanceOf[Project.SettingsDefinition].settings
 	}
-	private[this] def isSpace = (c: Char) => Character isSpace c
+	private[this] def isSpace = (c: Char) => Character isWhitespace c
 	private[this] def fstS(f: String => Boolean): ((String,Int)) => Boolean = { case (s,i) => f(s) }
 	private[this] def firstNonSpaceIs(lit: String) = (_: String).view.dropWhile(isSpace).startsWith(lit)
 	private[this] def or[A](a: A => Boolean, b: A => Boolean): A => Boolean = in => a(in) || b(in)
@@ -142,9 +166,13 @@ object Index
 			(value, ScopedKey(scope, key.asInstanceOf[AttributeKey[Task[_]]])) // unclear why this cast is needed even with a type test in the above filter
 		pairs.toMap[Task[_], ScopedKey[Task[_]]]
 	}
-	def stringToKeyMap(settings: Settings[Scope]): Map[String, AttributeKey[_]] =
+	def allKeys(settings: Seq[Setting[_]]): Set[ScopedKey[_]] =
+		settings.flatMap(s => s.key +: s.dependencies).toSet
+	def attributeKeys(settings: Settings[Scope]): Set[AttributeKey[_]] =
+		settings.data.values.flatMap(_.keys).toSet[AttributeKey[_]]
+	def stringToKeyMap(settings: Set[AttributeKey[_]]): Map[String, AttributeKey[_]] =	
 	{
-		val multiMap = settings.data.values.flatMap(_.keys).toSet[AttributeKey[_]].groupBy(_.label)
+		val multiMap = settings.groupBy(_.label)
 		val duplicates = multiMap collect { case (k, xs) if xs.size > 1 => (k, xs.map(_.manifest)) } collect { case (k, xs) if xs.size > 1 => (k, xs) }
 		if(duplicates.isEmpty)
 			multiMap.collect { case (k, v) if validID(k) => (k, v.head) } toMap;
@@ -162,7 +190,8 @@ object Index
 			update(runBefore, value, as get Keys.runBefore)
 			update(triggeredBy, value, as get Keys.triggeredBy)
 		}
-		new Triggers[Task](runBefore, triggeredBy)
+		val onComplete = Keys.onComplete in GlobalScope get ss getOrElse { () => () }
+		new Triggers[Task](runBefore, triggeredBy, map => { onComplete(); map } )
 	}
 	private[this] def update(map: TriggerMap, base: Task[_], tasksOpt: Option[Seq[Task[_]]]): Unit =
 		for( tasks <- tasksOpt; task <- tasks )
@@ -171,7 +200,7 @@ object Index
 object BuildStreams
 {
 		import Load.{BuildStructure, LoadedBuildUnit}
-		import Project.display
+		import Project.displayFull
 		import std.{TaskExtra,Transform}
 		import Path._
 		import BuildPaths.outputDirectory
@@ -181,7 +210,7 @@ object BuildStreams
 	final val StreamsDirectory = "streams"
 
 	def mkStreams(units: Map[URI, LoadedBuildUnit], root: URI, data: Settings[Scope]): Streams =
-		std.Streams( path(units, root, data), display, LogManager.construct(data) )
+		std.Streams( path(units, root, data), displayFull, LogManager.construct(data) )
 		
 	def path(units: Map[URI, LoadedBuildUnit], root: URI, data: Settings[Scope])(scoped: ScopedKey[_]): File =
 		resolvePath( projectPath(units, root, scoped, data), nonProjectPath(scoped) )
@@ -193,7 +222,7 @@ object BuildStreams
 		axis match
 		{
 			case Global => GlobalPath
-			case This => error("Unresolved This reference for " + label + " in " + display(scoped))
+			case This => error("Unresolved This reference for " + label + " in " + Project.displayFull(scoped))
 			case Select(t) => show(t)
 		}
 	def nonProjectPath[T](scoped: ScopedKey[T]): Seq[String] =
@@ -212,8 +241,8 @@ object BuildStreams
 			case Global => refTarget(GlobalScope, units(root).localBase, data) / GlobalPath
 			case Select(br @ BuildRef(uri)) => refTarget(br, units(uri).localBase, data) / BuildUnitPath
 			case Select(pr @ ProjectRef(uri, id)) => refTarget(pr, units(uri).defined(id).base, data)
-			case Select(pr) => error("Unresolved project reference (" + pr + ") in " + display(scoped))
-			case This => error("Unresolved project reference (This) in " + display(scoped))
+			case Select(pr) => error("Unresolved project reference (" + pr + ") in " + displayFull(scoped))
+			case This => error("Unresolved project reference (This) in " + displayFull(scoped))
 		}
 		
 	def refTarget(ref: ResolvedReference, fallbackBase: File, data: Settings[Scope]): File =
@@ -224,13 +253,19 @@ object BuildStreams
 object BuildPaths
 {
 	import Path._
-	import GlobFilter._
 
-	def defaultStaging = Path.userHome / ConfigDirectoryName / "staging"
-	def defaultGlobalPlugins = Path.userHome / ConfigDirectoryName / PluginsDirectoryName
+	def getGlobalBase(state: State): File  =  state get globalBaseDirectory orElse systemGlobalBase getOrElse defaultGlobalBase
+	def systemGlobalBase: Option[File] = Option(System.getProperty(GlobalBaseProperty)) flatMap { path =>
+		if(path.isEmpty) None else Some(new File(path))
+	}
+		
+	def defaultGlobalBase = Path.userHome / ConfigDirectoryName
+	def defaultStaging(globalBase: File) = globalBase / "staging"
+	def defaultGlobalPlugins(globalBase: File) = globalBase / PluginsDirectoryName
+	def defaultGlobalSettings(globalBase: File) = configurationSources(globalBase)
 	
 	def definitionSources(base: File): Seq[File] = (base * "*.scala").get
-	def configurationSources(base: File): Seq[File] = (base * "*.sbt").get
+	def configurationSources(base: File): Seq[File] = (base * (GlobFilter("*.sbt") - ".sbt")).get
 	def pluginDirectory(definitionBase: File) = definitionBase / PluginsDirectoryName
 
 	def evalOutputDirectory(base: File) = outputDirectory(base) / "config-classes"
@@ -249,6 +284,7 @@ object BuildPaths
 	final val PluginsDirectoryName = "plugins"
 	final val DefaultTargetName = "target"
 	final val ConfigDirectoryName = ".sbt"
+	final val GlobalBaseProperty = "sbt.global.base"
 
 	def crossPath(base: File, instance: ScalaInstance): File = base / ("scala_" + instance.version)
 }

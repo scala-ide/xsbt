@@ -15,7 +15,7 @@ object Sbt extends Build
 	override lazy val settings = super.settings ++ buildSettings ++ Status.settings
 	def buildSettings = Seq(
 		organization := "org.scala-tools.sbt",
-		version := "0.10.3",
+		version := "0.11.0",
 		publishArtifact in packageDoc := false,
 		scalaVersion := scalaVersionGlobal,
 		origScalaVersion := scalaVersionGlobal,
@@ -23,16 +23,17 @@ object Sbt extends Build
 		resolvers += "Typesafe IDE repo" at ("http://typesafe.artifactoryonline.com/typesafe/ide-" + Release.cutVersion(scalaVersionGlobal)),
 		publishMavenStyle := true,
 		componentID := None)
+
   def localPublishSettings = Seq(
     otherResolvers += Resolver.file("some-id", file("/tmp/sbt/publish")),
     publishLocalConfiguration <<= (packagedArtifacts, deliverLocal, ivyLoggingLevel) map { 
       (arts, _, level) => sbt.Classpaths.publishConfig(arts, None, resolverName = "some-id", logging = level ) 
     }
     )
-
       
-    lazy val origScalaVersion = SettingKey[String]("orig-scala-version")
-    private val scalaVersionGlobal = "2.9.0-1"
+  lazy val origScalaVersion = SettingKey[String]("orig-scala-version")
+  private val scalaVersionGlobal = "2.8.1"
+      
 	lazy val myProvided = config("provided") intransitive;
 	override def projects = super.projects.map(p => p.copy(configurations = (p.configurations.filter(_ != Provided)) :+ myProvided) settings(localPublishSettings: _*))
 	lazy val root: Project = Project("xsbt", file("."), aggregate = nonRoots ) settings( rootSettings : _*) configs( Sxr.sxrConf, Proguard )
@@ -101,11 +102,10 @@ object Sbt extends Build
 	lazy val precompiled29 = precompiled("2.9.0-1", scalaVersionGlobal)
 	lazy val precompiled282 = precompiled("2.8.2-SNAPSHOT", scalaVersionGlobal)
 	lazy val precompiled28 = precompiled("2.8.1", scalaVersionGlobal)
-//	lazy val precompiled27 = precompiled("2.7.7")
 
 		// Implements the core functionality of detecting and propagating changes incrementally.
 		//   Defines the data structures for representing file fingerprints and relationships and the overall source analysis
-	lazy val compileIncrementalSub = testedBaseProject(compilePath / "inc", "Incremental Compiler") dependsOn(collectionSub, apiSub, ioSub, logSub)
+	lazy val compileIncrementalSub = testedBaseProject(compilePath / "inc", "Incremental Compiler") dependsOn(collectionSub, apiSub, ioSub, logSub, classpathSub)
 		// Persists the incremental data structures using SBinary
 	lazy val compilePersistSub = baseProject(compilePath / "persist", "Persist") dependsOn(compileIncrementalSub, apiSub) settings(sbinary)
 		// sbt-side interface to compiler.  Calls compiler-side interface reflectively
@@ -130,6 +130,7 @@ object Sbt extends Build
 		// Strictly for bringing implicits and aliases from subsystems into the top-level sbt namespace through a single package object
 		//  technically, we need a dependency on all of mainSub's dependencies, but we don't do that since this is strictly an integration project
 		//  with the sole purpose of providing certain identifiers without qualification (with a package object)
+
 	lazy val sbtSub = baseProject(sbtPath, "Simple Build Tool") dependsOn(mainSub, compileInterfaceSub, precompiled210, precompiled291, precompiled29, precompiled282, precompiled28, scriptedSbtSub % "test->test") settings(sbtSettings : _*)
 
 		/* Nested subproject paths */
@@ -153,7 +154,8 @@ object Sbt extends Build
 			val loader = classpath.ClasspathUtilities.toLoader(scriptedSbtClasspath.files, scriptedSbtInstance.loader)
 			val m = ModuleUtilities.getObject("sbt.test.ScriptedTests", loader)
 			val r = m.getClass.getMethod("run", classOf[File], classOf[Boolean], classOf[String], classOf[String], classOf[String], classOf[Array[String]], classOf[File])
-			r.invoke(m, sourcePath, true: java.lang.Boolean, v, sv, ssv, args.toArray[String], launcher)
+			try { r.invoke(m, sourcePath, true: java.lang.Boolean, v, sv, ssv, args.toArray[String], launcher) }
+			catch { case ite: java.lang.reflect.InvocationTargetException => throw ite.getCause }
 		}
 	}
 
@@ -177,7 +179,7 @@ object Sbt extends Build
 		import Sxr.sxr
 	def releaseSettings = Release.settings(nonRoots, proguard in Proguard)
 	def rootSettings = releaseSettings ++ LaunchProguard.settings ++ LaunchProguard.specific(launchSub) ++ Sxr.settings ++ docSetting ++ Seq(
-		scriptedScalaVersion := "2.8.1",
+		scriptedScalaVersion <<= scalaVersion.identity,
 		scripted <<= scriptedTask,
 		scriptedSource <<= (sourceDirectory in sbtSub) / "sbt-test",
 		sources in sxr <<= deepTasks(sources in Compile),

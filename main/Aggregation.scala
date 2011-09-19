@@ -6,7 +6,7 @@ package sbt
 	import CommandSupport.logger
 	import Project.ScopedKey
 	import Load.BuildStructure
-	import Keys.{aggregate, parseResult, showSuccess, showTiming, timingFormat}
+	import Keys.{aggregate, showSuccess, showTiming, timingFormat}
 	import sbt.complete.Parser
 	import java.net.URI
 	import Parser._
@@ -60,21 +60,21 @@ final object Aggregation
 			case Some(current) => Scope.resolveBuildOnly(current, ref)
 		}
 
-	def printSettings[T](xs: Seq[KeyValue[T]], log: Logger) =
+	def printSettings[T](xs: Seq[KeyValue[T]], log: Logger)(implicit display: Show[ScopedKey[_]]) =
 		xs match
 		{
 			case KeyValue(_,x) :: Nil => log.info(x.toString)
-			case _ => xs foreach { case KeyValue(key, value) => log.info(Project.display(key) + "\n\t" + value.toString) }
+			case _ => xs foreach { case KeyValue(key, value) => log.info(display(key) + "\n\t" + value.toString) }
 		}
 	type Values[T] = Seq[KeyValue[T]]
 	def seqParser[T](ps: Values[Parser[T]]): Parser[Seq[KeyValue[T]]]  =  seq(ps.map { case KeyValue(k,p) => p.map(v => KeyValue(k,v) ) })
 
-	def applyTasks[T](s: State, structure: BuildStructure, ps: Values[Parser[Task[T]]], show: Boolean): Parser[() => State] =
+	def applyTasks[T](s: State, structure: BuildStructure, ps: Values[Parser[Task[T]]], show: Boolean)(implicit display: Show[ScopedKey[_]]): Parser[() => State] =
 		Command.applyEffect(seqParser(ps)) { ts =>
 			runTasks(s, structure, ts, Dummies(KNil, HNil), show)
 			s
 		}
-	def runTasks[HL <: HList, T](s: State, structure: Load.BuildStructure, ts: Values[Task[T]], extra: Dummies[HL], show: Boolean)
+	def runTasks[HL <: HList, T](s: State, structure: Load.BuildStructure, ts: Values[Task[T]], extra: Dummies[HL], show: Boolean)(implicit display: Show[ScopedKey[_]])
 	{
 			import EvaluateTask._
 			import std.TaskExtra._
@@ -129,33 +129,22 @@ final object Aggregation
 	}
 
 	final case class Dummies[HL <: HList](tasks: KList[Task,HL], values: HL)
-	private[this] def dummyMap[HL <: HList, I](vs: Values[I], data: Settings[Scope], dummies: Dummies[HL]): Dummies[HL2] forSome { type HL2 <: HList } =
-		vs match
-		{
-			case Seq() => dummies
-			case Seq(kv: KeyValue[t], xs @ _*) =>
-				val dummyParsed = dummyParsedTask(kv.key, data).asInstanceOf[Task[t]]
-				dummyMap(xs, data, Dummies(KCons(dummyParsed, dummies.tasks), HCons(kv.value, dummies.values)))
-		}
-	def applyDynamicTasks[I](s: State, structure: BuildStructure, inputs: Values[InputDynamic[I]], show: Boolean): Parser[() => State] =
+	def applyDynamicTasks[I](s: State, structure: BuildStructure, inputs: Values[InputDynamic[I]], show: Boolean)(implicit display: Show[ScopedKey[_]]): Parser[() => State] =
 	{
 		val parsers = inputs.map { case KeyValue(k,t) => KeyValue(k, t parser s) }
 		Command.applyEffect(seqParser(parsers)) { parseds =>
 			import EvaluateTask._
-			val dummies = dummyMap(parseds, structure.data, Dummies(KNil, HNil))
+			val inputMap = (Map.empty[AnyRef,Any] /: (inputs zip parseds)) { case (im, (id, v)) => im + ((id.value.defined, v.value)) }
+			val dummies = Dummies( InputTask.inputMap :^: KNil, inputMap :+: HNil)
 			val roots = inputs.map { case KeyValue(k,t) => KeyValue(k,t.task) }
 			runTasks(s, structure, roots, dummies, show)
 			s
 		}
 	}
-
-	private[this] def dummyParsedTask(key: ScopedKey[_], data: Settings[Scope]): Task[_] =
-		data.get(Scope.fillTaskAxis(key.scope, key.key), parseResult.key) getOrElse error("Parsed result dummy task not found in " + Project.display(key))
-		
-	def valueParser(s: State, structure: BuildStructure, show: Boolean)(key: ScopedKey[_]): Parser[() => State] =
+	def valueParser(s: State, structure: BuildStructure, show: Boolean)(key: ScopedKey[_])(implicit display: Show[ScopedKey[_]]): Parser[() => State] =
 		getTasks(key, structure, true).toList match
 		{
-			case Nil => failure("No such setting/task: " + (Project display key))
+			case Nil => failure("No such setting/task: " + display(key))
 			case xs @ KeyValue(_, _: InputStatic[t]) :: _ => applyTasks(s, structure, maps(xs.asInstanceOf[Values[InputStatic[t]]])(_.parser(s)), show)
 			case xs @ KeyValue(_, _: InputDynamic[t]) :: _ => applyDynamicTasks(s, structure, xs.asInstanceOf[Values[InputDynamic[t]]], show)
 			case xs @ KeyValue(_, _: Task[t]) :: _ => applyTasks(s, structure, maps(xs.asInstanceOf[Values[Task[t]]])(x => success(x)), show)

@@ -12,15 +12,15 @@ package sbt
 * @param configurations a sequence containing one report for each configuration resolved.
 * @see sbt.RichUpdateReport
  */
-final class UpdateReport(val cachedDescriptor: File, val configurations: Seq[ConfigurationReport])
+final class UpdateReport(val cachedDescriptor: File, val configurations: Seq[ConfigurationReport], val stats: UpdateStats)
 {
-	override def toString = "Update report:\n" + configurations.mkString
+	override def toString = "Update report:\n\t" + stats + "\n" + configurations.mkString
 
 	/** All resolved modules in all configurations. */
 	def allModules: Seq[ModuleID] = configurations.flatMap(_.allModules).distinct
 
 	def retrieve(f: (String, ModuleID, Artifact, File) => File): UpdateReport =
-		new UpdateReport(cachedDescriptor, configurations map { _ retrieve f} )
+		new UpdateReport(cachedDescriptor, configurations map { _ retrieve f}, stats )
 
 	/** Gets the report for the given configuration, or `None` if the configuration was not resolved.*/
 	def configuration(s: String) = configurations.find(_.configuration == s)
@@ -33,17 +33,18 @@ final class UpdateReport(val cachedDescriptor: File, val configurations: Seq[Con
 * @param configuration the configuration this report is for.
 * @param modules a seqeuence containing one report for each module resolved for this configuration.
 */
-final class ConfigurationReport(val configuration: String, val modules: Seq[ModuleReport])
+final class ConfigurationReport(val configuration: String, val modules: Seq[ModuleReport], val evicted: Seq[ModuleID])
 {
-	override def toString = "\t" + configuration + ":\n" + modules.mkString
+	override def toString = "\t" + configuration + ":\n" + modules.mkString + evicted.map("\t\t(EVICTED) " + _ + "\n").mkString
 
 	/** All resolved modules for this configuration.
 	* For a given organization and module name, there is only one revision/`ModuleID` in this sequence.
 	*/
-	def allModules: Seq[ModuleID] = modules.map(_.module)
-
+	def allModules: Seq[ModuleID] = modules.map(mr => addConfiguration(mr.module))
+	private[this] def addConfiguration(mod: ModuleID): ModuleID = if(mod.configurations.isEmpty) mod.copy(configurations = Some(configuration)) else mod
+	
 	def retrieve(f: (String, ModuleID, Artifact, File) => File): ConfigurationReport =
-		new ConfigurationReport(configuration, modules map { _.retrieve( (mid,art,file) => f(configuration, mid, art, file)) })
+		new ConfigurationReport(configuration, modules map { _.retrieve( (mid,art,file) => f(configuration, mid, art, file)) }, evicted)
 }
 
 /** Provides information about the resolution of a module.
@@ -119,9 +120,13 @@ object UpdateReport
 			val newConfigurations = report.configurations.map { confReport =>
 				import confReport._
 				val newModules = modules map { modReport => f(configuration, modReport) }
-				new ConfigurationReport(configuration, newModules)
+				new ConfigurationReport(configuration, newModules, evicted)
 			}
-			new UpdateReport(report.cachedDescriptor, newConfigurations)
+			new UpdateReport(report.cachedDescriptor, newConfigurations, report.stats)
 		}
 	}
+}
+final class UpdateStats(val resolveTime: Long, val downloadTime: Long, val downloadSize: Long)
+{
+	override def toString = Seq("Resolve time: " + resolveTime + " ms", "Download time: " + downloadTime + " ms", "Download size: " + downloadSize + " bytes").mkString(", ")
 }

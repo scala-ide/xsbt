@@ -10,7 +10,7 @@ package sbt
 	import Types.idFun
 
 	import Command.applyEffect
-	import Keys.{analysis,historyPath,logged,shellPrompt}
+	import Keys.{analysis,historyPath,globalLogging,shellPrompt}
 	import scala.annotation.tailrec
 	import scala.collection.JavaConversions._
 	import Function.tupled
@@ -30,7 +30,7 @@ final class xMain extends xsbti.AppMain
 		val initialCommandDefs = Seq(initialize, defaults)
 		val commands = DefaultsCommand +: InitCommand +: (DefaultBootCommands ++ configuration.arguments.map(_.trim))
 		val state = State( configuration, initialCommandDefs, Set.empty, None, commands, initialAttributes, None )
-		MainLoop.run(state)
+		MainLoop.runLogged(state)
 	}
 }
 final class ScriptMain extends xsbti.AppMain
@@ -40,7 +40,7 @@ final class ScriptMain extends xsbti.AppMain
 		import BuiltinCommands.{initialAttributes, ScriptCommands}
 		val commands = Script.Name +: configuration.arguments.map(_.trim)
 		val state = State( configuration, ScriptCommands, Set.empty, None, commands, initialAttributes, None )
-		MainLoop.run(state)
+		MainLoop.runLogged(state)
 	}	
 }
 final class ConsoleMain extends xsbti.AppMain
@@ -50,12 +50,32 @@ final class ConsoleMain extends xsbti.AppMain
 		import BuiltinCommands.{initialAttributes, ConsoleCommands}
 		val commands = IvyConsole.Name +: configuration.arguments.map(_.trim)
 		val state = State( configuration, ConsoleCommands, Set.empty, None, commands, initialAttributes, None )
-		MainLoop.run(state)
+		MainLoop.runLogged(state)
 	}
 }
 object MainLoop
 {
-	@tailrec final def run(state: State): xsbti.MainResult =
+	def runLogged(state: State): xsbti.MainResult =
+	{
+		val logFile = File.createTempFile("sbt", ".log")
+		try {
+			val result = runLogged(state, logFile)
+			logFile.delete() // only delete when exiting normally
+			result
+		}
+		catch {
+			case e: xsbti.FullReload => throw e
+			case e => System.err.println("sbt appears to be exiting abnormally.\n  The log file for this session is at " + logFile); throw e			
+		}
+	}
+	def runLogged(state: State, backing: File): xsbti.MainResult =
+		Using.fileWriter()(backing) { writer =>
+			val out = new java.io.PrintWriter(writer)
+			val loggedState = state.put(globalLogging.key, LogManager.globalDefault(out, backing))
+			try { run(loggedState) } finally { out.close() }
+		}
+
+	@tailrec def run(state: State): xsbti.MainResult =
 		state.result match
 		{
 			case None => run(next(state))
@@ -75,11 +95,11 @@ object MainLoop
 	import CommandSupport._
 object BuiltinCommands
 {
-	def initialAttributes = AttributeMap.empty.put(logged, ConsoleLogger())
+	def initialAttributes = AttributeMap.empty
 
 	def ConsoleCommands: Seq[Command] = Seq(ignore, exit, IvyConsole.command, act, nop)
 	def ScriptCommands: Seq[Command] = Seq(ignore, exit, Script.command, act, nop)
-	def DefaultCommands: Seq[Command] = Seq(ignore, help, reboot, read, history, continuous, exit, loadProject, loadProjectImpl, loadFailed, Cross.crossBuild, Cross.switchVersion,
+	def DefaultCommands: Seq[Command] = Seq(ignore, help, about, reboot, read, history, continuous, exit, loadProject, loadProjectImpl, loadFailed, Cross.crossBuild, Cross.switchVersion,
 		projects, project, setOnFailure, clearOnFailure, ifLast, multi, shell, set, tasks, inspect, eval, alias, append, last, lastGrep, nop, sessionCommand, act)
 	def DefaultBootCommands: Seq[String] = LoadProject :: (IfLast + " " + Shell) :: Nil
 
@@ -90,6 +110,7 @@ object BuiltinCommands
 		h.detail match { case (commands, value) => if( selected exists commands ) Some(value) else None }
 
 	def help = Command.make(HelpCommand, helpBrief, helpDetailed)(helpParser)
+	def about = Command.command(AboutCommand, aboutBrief, aboutDetailed) { s => logger(s).info(aboutString(s)); s }
 
 	def helpParser(s: State) =
 	{
@@ -109,6 +130,46 @@ object BuiltinCommands
 		System.out.println(message)
 		s
 	}
+	def sbtVersion(s: State): String = s.configuration.provider.id.version
+	def scalaVersion(s: State): String = s.configuration.provider.scalaProvider.version
+	def aboutString(s: State): String =
+	{
+		"This is sbt " + sbtVersion(s) + "\n" +
+		aboutProject(s) +
+		"sbt, sbt plugins, and build definitions are using Scala " + scalaVersion(s) + "\n" +
+		"All logging output for this session is available at " + CommandSupport.globalLogging(s).backing
+	}
+	def aboutProject(s: State): String =
+		if(Project.isProjectLoaded(s))
+		{
+			val e = Project.extract(s)
+			val current = "The current project is " + Project.display(e.currentRef) + "\n"
+			val sc = aboutScala(s, e)
+			val built = if(sc.isEmpty) "" else "The current project is built against " + sc + "\n"
+			current + built + aboutPlugins(e)
+		}
+		else "No project is currently loaded.\n"
+
+	def aboutPlugins(e: Extracted): String =
+	{
+		val allPluginNames = e.structure.units.values.flatMap(_.unit.plugins.pluginNames).toSeq.distinct
+		if(allPluginNames.isEmpty) "" else allPluginNames.mkString("Available Plugins: ", ", ", "\n")
+	}
+	def aboutScala(s: State, e: Extracted): String =
+	{
+		val scalaVersion = e.getOpt(Keys.scalaVersion)
+		val scalaHome = e.getOpt(Keys.scalaHome).flatMap(idFun)
+		val instance = e.getOpt(Keys.scalaInstance.task).flatMap(_ => quiet(e.evalTask(Keys.scalaInstance, s)))
+		(scalaVersion, scalaHome, instance) match {
+			case (sv, Some(home), Some(si)) => "local Scala version " + selectScalaVersion(sv, si) + " at " + home.getAbsolutePath
+			case (_, Some(home), None) => "a local Scala build at " + home.getAbsolutePath
+			case (sv, None, Some(si)) => "Scala " + selectScalaVersion(sv, si)
+			case (Some(sv), None, None) => "Scala " + sv
+			case (None, None, None) => ""
+		}
+	}
+	private[this] def selectScalaVersion(sv: Option[String], si: ScalaInstance): String  =  sv match { case Some(si.version) => si.version; case _ => si.actualVersion }
+	private[this] def quiet[T](t: => T): Option[T] = try { Some(t) } catch { case e: Exception => None }
 
 	def tasks = Command.command(TasksCommand, tasksBrief, tasksDetailed) { s =>
 		System.out.println(tasksPreamble)
@@ -155,7 +216,9 @@ object BuiltinCommands
 		val reader = new FullReader(history, s.combinedParser)
 		val line = reader.readLine(prompt)
 		line match {
-			case Some(line) => s.copy(onFailure = Some(Shell), remainingCommands = line +: Shell +: s.remainingCommands)
+			case Some(line) =>
+				if(!line.trim.isEmpty) CommandSupport.globalLogging(s).backed.out.println(Output.DefaultTail + line)
+				s.copy(onFailure = Some(Shell), remainingCommands = line +: Shell +: s.remainingCommands)
 			case None => s
 		}
 	}
@@ -172,7 +235,7 @@ object BuiltinCommands
 	def ifLast = Command(IfLast, IfLastBrief, IfLastDetailed)(otherCommandParser) { (s, arg) =>
 		if(s.remainingCommands.isEmpty) arg :: s else s
 	}
-	def append = Command(Append, AppendLastBrief, AppendLastDetailed)(otherCommandParser) { (s, arg) =>
+	def append = Command(AppendCommand, AppendLastBrief, AppendLastDetailed)(otherCommandParser) { (s, arg) =>
 		s.copy(remainingCommands = s.remainingCommands :+ arg)
 	}
 	
@@ -264,46 +327,54 @@ object BuiltinCommands
 		val extracted = Project extract s
 		import extracted._
 		val result = session.currentEval().eval(arg, srcName = "<eval>", imports = autoImports(extracted))
-		log.info("ans: " + result.tpe + " = " + result.value)
+		log.info("ans: " + result.tpe + " = " + result.getValue(currentLoader))
 		s
 	}
 	def sessionCommand = Command.make(SessionCommand, sessionBrief, SessionSettings.Help)(SessionSettings.command)
 	def reapply(newSession: SessionSettings, structure: Load.BuildStructure, s: State): State =
 	{
 		logger(s).info("Reapplying settings...")
-		val newStructure = Load.reapply(newSession.mergeSettings, structure)
+		val newStructure = Load.reapply(newSession.mergeSettings, structure)( Project.showContextKey(newSession, structure) )
 		Project.setProject(newSession, newStructure, s)
 	}
 	def set = Command.single(SetCommand, setBrief, setDetailed) { (s, arg) =>
 		val extracted = Project extract s
 		import extracted._
-		val settings = EvaluateConfigurations.evaluateSetting(session.currentEval(), "<set>", imports(extracted), arg, 0)
+		val settings = EvaluateConfigurations.evaluateSetting(session.currentEval(), "<set>", imports(extracted), arg, 0)(currentLoader)
 		val append = Load.transformSettings(Load.projectScope(currentRef), currentRef.build, rootProject, settings)
 		val newSession = session.appendSettings( append map (a => (a, arg)))
 		reapply(newSession, structure, s)
 	}
 	def inspect = Command(InspectCommand, inspectBrief, inspectDetailed)(inspectParser) { case (s,(actual,sk)) =>
-		val detailString = Project.details(Project.structure(s), actual, sk.scope, sk.key)
+		val detailString = Project.details(Project.structure(s), actual, sk.scope, sk.key)( Project.showContextKey(s) )
 		logger(s).info(detailString)
 		s
 	}
-	def lastGrep = Command(LastGrepCommand, lastGrepBrief, lastGrepDetailed)(lastGrepParser) { case (s,(pattern,sk)) =>
-		val (str, ref) = extractLast(s)
-		Output.lastGrep(sk, str, pattern, ref)
-		s
+	def lastGrep = Command(LastGrepCommand, lastGrepBrief, lastGrepDetailed)(lastGrepParser) {
+		case (s, (pattern,Some(sk))) =>
+			val (str, ref, display) = extractLast(s)
+			Output.lastGrep(sk, str, pattern)(display)
+			s
+		case (s, (pattern, None)) =>
+			Output.lastGrep(CommandSupport.globalLogging(s).backing, pattern)
+			s
 	}
 	def extractLast(s: State) = {
 		val ext = Project.extract(s)
-		(ext.structure.streams, Select(ext.currentRef))
+		(ext.structure, Select(ext.currentRef), ext.showKey)
 	}
 	def inspectParser = (s: State) => token((Space ~> ("actual" ^^^ true)) ?? false) ~ spacedKeyParser(s)
 	val spacedKeyParser = (s: State) => Act.requireSession(s, token(Space) ~> Act.scopedKeyParser(s))
 	val optSpacedKeyParser = (s: State) => spacedKeyParser(s).?
 	def lastGrepParser(s: State) = Act.requireSession(s, (token(Space) ~> token(NotSpace, "<pattern>")) ~ optSpacedKeyParser(s))
-	def last = Command(LastCommand, lastBrief, lastDetailed)(optSpacedKeyParser) { (s,sk) =>
-		val (str, ref) = extractLast(s)
-		Output.last(sk, str, ref)
-		s
+	def last = Command(LastCommand, lastBrief, lastDetailed)(optSpacedKeyParser) {
+		case (s,Some(sk)) =>
+			val (str, ref, display) = extractLast(s)
+			Output.last(sk, str)(display)
+			s
+		case (s, None) =>
+			Output.last( CommandSupport.globalLogging(s).backing )
+			s
 	}
 
 	def autoImports(extracted: Extracted): EvalImports  =  new EvalImports(imports(extracted), "<auto-imports>")
@@ -317,7 +388,7 @@ object BuiltinCommands
 	{
 		log.info("In " + uri)
 		def prefix(id: String) = if(currentID != id) "   " else if(current) " * " else "(*)"
-		for(id <- build.defined.keys) log.info("\t" + prefix(id) + id)
+		for(id <- build.defined.keys.toSeq.sorted) log.info("\t" + prefix(id) + id)
 	}
 
 	def act = Command.custom(Act.actParser)
@@ -346,15 +417,21 @@ object BuiltinCommands
 	def loadFailed = Command.command(LoadFailed)(handleLoadFailed)
 	@tailrec def handleLoadFailed(s: State): State =
 	{
-		val result = (SimpleReader.readLine("Project loading failed: (r)etry, (q)uit, or (i)gnore? ") getOrElse Quit).toLowerCase
+		val result = (SimpleReader.readLine("Project loading failed: (r)etry, (q)uit, (l)ast, or (i)gnore? ") getOrElse Quit).toLowerCase
 		def matches(s: String) = !result.isEmpty && (s startsWith result)
 		
-		if(matches("retry"))
+		if(result.isEmpty || matches("retry"))
 			LoadProject :: s
 		else if(matches(Quit))
 			s.exit(ok = false)
 		else if(matches("ignore"))
+		{
+			val hadPrevious = Project.isProjectLoaded(s)
+			logger(s).warn("Ignoring load failure: " + (if(hadPrevious) "using previously loaded project." else "no project loaded."))
 			s
+		}
+		else if(matches("last"))
+			LastCommand :: LoadFailed :: s
 		else
 		{
 			println("Invalid response.")
@@ -370,6 +447,7 @@ object BuiltinCommands
 		IO.createDirectory(base)
 		val (eval, structure) = Load.defaultLoad(s, base, logger(s))
 		val session = Load.initialSession(structure, eval)
+		SessionSettings.checkSession(session, s)
 		Project.setProject(session, structure, s)
 	}
 	
@@ -385,14 +463,15 @@ object BuiltinCommands
 				val cause = ite.getCause
 				if(cause == null || cause == ite) logFullException(ite, log) else handleException(cause, s, log)
 			case _: MessageOnlyException => log.error(e.toString)
+			case _: Project.Uninitialized => logFullException(e, log, true)
 			case _ => logFullException(e, log)
 		}
 		s.fail
 	}
-	def logFullException(e: Throwable, log: Logger)
+	def logFullException(e: Throwable, log: Logger, messageOnly: Boolean = false)
 	{
 		log.trace(e)
-		log.error(ErrorHandling reducedToString e)
+		log.error(if(messageOnly) e.getMessage else ErrorHandling reducedToString e)
 		log.error("Use 'last' for the full log.")
 	}
 	

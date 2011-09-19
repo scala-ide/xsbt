@@ -11,7 +11,8 @@ import Path._
 
 object CommandSupport
 {
-	def logger(s: State) = s get Keys.logged getOrElse ConsoleLogger()
+	def logger(s: State) = globalLogging(s).full
+	def globalLogging(s: State) = s get Keys.globalLogging.key getOrElse error("Global logging misconfigured")
 
 	// slightly better fallback in case of older launcher
 	def bootDirectory(state: State): File =
@@ -33,6 +34,7 @@ object CommandSupport
 	/** The prefix used to identify a request to execute the remaining input on source changes.*/
 	val ContinuousExecutePrefix = "~"
 	val HelpCommand = "help"
+	val AboutCommand = "about"
 	val TasksCommand = "tasks"
 	val ProjectCommand = "project"
 	val ProjectsCommand = "projects"
@@ -121,6 +123,9 @@ Tasks produce values.  Use the 'show' command to run the task and print the resu
 	def helpBrief = (HelpCommand + " command*", "Displays this help message or prints detailed help on requested commands.")
 	def helpDetailed = "If an argument is provided, this prints detailed help for that command.\nOtherwise, this prints a help summary."
 
+	def aboutBrief = "Displays basic information about sbt and the build."
+	def aboutDetailed = aboutBrief
+
 	def projectBrief = (ProjectCommand + " [project]", "Displays the current project or changes to the provided `project`.")
 	def projectDetailed =
 ProjectCommand +
@@ -188,8 +193,8 @@ Multi + " command1 " + Multi + """ command2 ...
 	Runs the specified commands.
 """
 
-	def Append = "append"
-	def AppendLastBrief = (Append + " command", AppendLastDetailed)
+	def AppendCommand = "append"
+	def AppendLastBrief = (AppendCommand + " command", AppendLastDetailed)
 	def AppendLastDetailed = "Appends `command` to list of commands to run."
 
 	val AliasCommand = "alias"
