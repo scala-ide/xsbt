@@ -9,11 +9,13 @@ object Sxr
 	val sourceDirectories = TaskKey[Seq[File]]("sxr-source-directories")
 
 	lazy val settings: Seq[Setting[_]] = inTask(sxr)(inSxrSettings) ++ baseSettings
+	
+	val sxrScalaVersion = Map("2.9.1" -> "2.9.0")
 
 	def baseSettings = Seq(
 	  libraryDependencies <<= (scalaVersion, libraryDependencies) {(sv, deps) =>
 	    val sxrVersion = VersionComp.versionMap("sxr").getOrElse(sv, error("Unsupported Scala version " + sv))
-	    deps :+ "org.scala-tools.sxr" %% "sxr" % sxrVersion % sxrConf.name
+	    deps :+ "org.scala-tools.sxr" % ("sxr_" + sxrScalaVersion.getOrElse(sv, sv)) % sxrVersion % sxrConf.name
 	  }
 		//libraryDependencies += "org.scala-tools.sxr" % "sxr_2.9.0" % "0.2.7" % sxrConf.name
 	)

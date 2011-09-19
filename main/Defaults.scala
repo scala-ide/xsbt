@@ -321,7 +321,7 @@ object Defaults extends BuildCommon
 	)
 	lazy val packageConfig: Seq[Setting[_]] = Seq(
 		packageOptions in packageBin <<= (packageOptions, mainClass in packageBin, name, version, homepage, organization, organizationName) map { (p, main, name, ver, h, org, orgName) =>
-			Package.addSpecManifestAttributes(name, ver, orgName) +: Package.addImplManifestAttributes(name, ver, h, org, orgName) +: main.map(Package.MainClass.apply) ++: p },
+			List(Package.addSpecManifestAttributes(name, ver, orgName), Package.addImplManifestAttributes(name, ver, h, org, orgName)) ++  main.map(Package.MainClass.apply) ++ p},
 		packageOptions in packageSrc <<= (name, version, organizationName, packageOptions) map { Package.addSpecManifestAttributes(_, _, _) +: _ },
 		`package` <<= packageBin
 	) ++
@@ -441,7 +441,7 @@ object Defaults extends BuildCommon
 		}
 	))
 		
-	@deprecated("Use `docSetting` instead", "0.11.0") def docTask: Initialize[Task[File]] =
+	@deprecated("Use `docSetting` instead") def docTask: Initialize[Task[File]] =
 		(cacheDirectory, compileInputs, streams, docDirectory, configuration, scaladocOptions) map { (cache, in, s, target, config, options) =>
 			val d = new Scaladoc(in.config.maxErrors, in.compilers.scalac)
 			val cp = in.config.classpath.toList - in.config.classesDirectory

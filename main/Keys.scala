@@ -85,11 +85,11 @@ object Keys
 		// Filters
 	val includeFilter = SettingKey[FileFilter]("include-filter", "Filter for including sources and resources files from default directories.")
 	val excludeFilter = SettingKey[FileFilter]("exclude-filter", "Filter for excluding sources and resources files from default directories.")
-	@deprecated("Use `includeFilter`, scoped by respective classpath related task instead.  For example, `includeFilter in unmanagedJars`", "0.11.0")
+	@deprecated("Use `includeFilter`, scoped by respective classpath related task instead.  For example, `includeFilter in unmanagedJars`")
 	val classpathFilter = SettingKey[FileFilter]("classpath-filter", "Filter for selecting unmanaged dependencies.")
-	@deprecated("Use `includeFilter`, scoped by respective source related task instead.  For example, `includeFilter in unmanagedSources`", "0.11.0")
+	@deprecated("Use `includeFilter`, scoped by respective source related task instead.  For example, `includeFilter in unmanagedSources`")
 	val sourceFilter = SettingKey[FileFilter]("source-filter", "Filter for selecting sources from default directories.")
-	@deprecated("Use `excludeFilter`, scoped by respective task instead.  For example, `excludeFilter in unmanagedSources`", "0.11.0")
+	@deprecated("Use `excludeFilter`, scoped by respective task instead.  For example, `excludeFilter in unmanagedSources`")
 	val defaultExcludes = SettingKey[FileFilter]("default-excludes", "Filter for excluding files, such as sources and resources, by default.")
 
 		// Resource paths
@@ -104,7 +104,7 @@ object Keys
 
 		// Output paths
 	val classDirectory = SettingKey[File]("class-directory", "Directory for compiled classes and copied resources.")
-	@deprecated("Use `target`, scoped by the doc task.  For example, `target in Compile in doc`", "0.11.0")
+	@deprecated("Use `target`, scoped by the doc task.  For example, `target in Compile in doc`")
 	val docDirectory = SettingKey[File]("doc-directory", "Directory for generated documentation.")
 	val cacheDirectory = SettingKey[File]("cache-directory", "Directory used for caching task data.")
 	val cleanFiles = SettingKey[Seq[File]]("clean-files", "The files to recursively delete during a clean.")
@@ -119,7 +119,7 @@ object Keys
 	// compile/doc keys
 	val autoCompilerPlugins = SettingKey[Boolean]("auto-compiler-plugins", "If true, enables automatically generating -Xplugin arguments to the compiler based on the classpath for the " + CompilerPlugin.name + " configuration.")
 	val maxErrors = SettingKey[Int]("max-errors", "The maximum number of errors, such as compile errors, to list.")
-	@deprecated("Use `scalacOptions`, scoped by the doc task.  For example, `scalacOptions in doc`", "0.11.0")
+	@deprecated("Use `scalacOptions`, scoped by the doc task.  For example, `scalacOptions in doc`")
 	val scaladocOptions = TaskKey[Seq[String]]("scaladoc-options", "Options for Scaladoc.")
 	val scalacOptions = TaskKey[Seq[String]]("scalac-options", "Options for the Scala compiler.")
 	val javacOptions = SettingKey[Seq[String]]("javac-options", "Options for the Java compiler.")
