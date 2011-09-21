@@ -98,7 +98,7 @@ object Sbt extends Build
 		//   Includes API and Analyzer phases that extract source API and relationships.
 	lazy val compileInterfaceSub = baseProject(compilePath / "interface", "Compiler Interface") dependsOn(interfaceSub, ioSub % "test->test", logSub % "test->test", launchSub % "test->test") settings( compileInterfaceSettings : _*)
 	lazy val precompiled210 = precompiled("2.10.0-SNAPSHOT", scalaVersionGlobal)
-	lazy val precompiled291 = precompiled("2.9.1-SNAPSHOT", scalaVersionGlobal)
+	lazy val precompiled291 = precompiled("2.9.1", scalaVersionGlobal)
 	lazy val precompiled29 = precompiled("2.9.0-1", scalaVersionGlobal)
 	lazy val precompiled282 = precompiled("2.8.2-SNAPSHOT", scalaVersionGlobal)
 	lazy val precompiled28 = precompiled("2.8.1", scalaVersionGlobal)
