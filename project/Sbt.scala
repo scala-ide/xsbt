@@ -32,7 +32,7 @@ object Sbt extends Build
     )
       
   lazy val origScalaVersion = SettingKey[String]("orig-scala-version")
-  private val scalaVersionGlobal = "2.8.1"
+  private val scalaVersionGlobal = "2.10.0-SNAPSHOT"
       
 	lazy val myProvided = config("provided") intransitive;
 	override def projects = super.projects.map(p => p.copy(configurations = (p.configurations.filter(_ != Provided)) :+ myProvided) settings(localPublishSettings: _*))
