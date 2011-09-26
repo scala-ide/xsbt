@@ -129,6 +129,7 @@ object Incremental
 
 	def prune(invalidatedSrcs: Set[File], previous: Analysis): Analysis =
 	{
+		debug("prune: deleting " + invalidatedSrcs.flatMap(previous.relations.products))
 		IO.delete( invalidatedSrcs.flatMap(previous.relations.products) )
 		previous -- invalidatedSrcs
 	}

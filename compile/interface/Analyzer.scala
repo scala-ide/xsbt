@@ -28,8 +28,6 @@ final class Analyzer(val global: Global, val callback: AnalysisCallback) extends
 		def name = Analyzer.name
 		def run
 		{
-			val outputDirectory = new File(global.settings.outdir.value)
-
 			for(unit <- currentRun.units if !unit.isJava)
 			{
 				// build dependencies structure
@@ -61,11 +59,15 @@ final class Analyzer(val global: Global, val callback: AnalysisCallback) extends
 				for(iclass <- unit.icode)
 				{
 					val sym = iclass.symbol
+					val outputDirectory = global.settings.outputDirs.outputDirFor(sym.sourceFile)
+
 					def addGenerated(separatorRequired: Boolean)
 					{
-						val classFile = fileForClass(outputDirectory, sym, separatorRequired)
+						val classFile = fileForClass(outputDirectory.file, sym, separatorRequired)
 						if(classFile.exists)
-							callback.generatedClass(sourceFile, classFile, className(sym, '.', separatorRequired))
+						  callback.generatedClass(sourceFile, classFile, className(sym, '.', separatorRequired))
+						else
+							log("[sbt-analyzer] couldn't find file on disk for generated classfile " + classFile)
 					}
 					if(sym.isModuleClass && !sym.isImplClass)
 					{
