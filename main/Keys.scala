@@ -15,6 +15,7 @@ package sbt
 	import descriptor.ModuleDescriptor, id.ModuleRevisionId
 	import org.scalatools.testing.Framework
 	import Configurations.CompilerPlugin
+	import Types.Id
 
 object Keys
 {
@@ -47,6 +48,7 @@ object Keys
 	val onLoad = SettingKey[State => State]("on-load", "Transformation to apply to the build state when the build is loaded.")
 	val onUnload = SettingKey[State => State]("on-unload", "Transformation to apply to the build state when the build is unloaded.")
 	val onLoadMessage = SettingKey[String]("on-load-message", "Message to display when the project is loaded.")
+	val transformState = AttributeKey[State => State]("transform-state", "State transformation to apply after tasks run.")
 
 	val onComplete = SettingKey[() => Unit]("on-complete", "Hook to run when task evaluation completes.  The type of this setting is subject to change, pending the resolution of SI-2915.")
 // https://issues.scala-lang.org/browse/SI-2915
@@ -125,6 +127,7 @@ object Keys
 	val javacOptions = SettingKey[Seq[String]]("javac-options", "Options for the Java compiler.")
 	val compileOrder = SettingKey[CompileOrder.Value]("compile-order", "Configures the order in which Java and sources within a single compilation are compiled.  Valid values are: JavaThenScala, ScalaThenJava, or Mixed.")
 	val initialCommands = SettingKey[String]("initial-commands", "Initial commands to execute when starting up the Scala interpreter.")
+	val cleanupCommands = SettingKey[String]("cleanup-commands", "Commands to execute before the Scala interpreter exits.")
 	val compileInputs = TaskKey[Compiler.Inputs]("compile-inputs", "Collects all inputs needed for compilation.")
 	val scalaHome = SettingKey[Option[File]]("scala-home", "If Some, defines the local Scala installation to use for compilation, running, and testing.")
 	val scalaInstance = TaskKey[ScalaInstance]("scala-instance", "Defines the Scala instance to use for compilation, running, and testing.")
@@ -179,6 +182,7 @@ object Keys
 	val testLoader = TaskKey[ClassLoader]("test-loader", "Provides the class loader used for testing.")
 	val loadedTestFrameworks = TaskKey[Map[TestFramework,Framework]]("loaded-test-frameworks", "Loads Framework definitions from the test loader.")
 	val definedTests = TaskKey[Seq[TestDefinition]]("defined-tests", "Provides the list of defined tests.")
+	val definedTestNames = TaskKey[Seq[String]]("defined-test-names", "Provides the set of defined test names.")
 	val executeTests = TaskKey[Tests.Output]("execute-tests", "Executes all tests, producing a report.")
 	val test = TaskKey[Unit]("test", "Executes all tests.")
 	val testOnly = InputKey[Unit]("test-only", "Executes the tests provided as arguments or all tests if no arguments are provided.")
@@ -216,7 +220,7 @@ object Keys
 	val fullClasspath = TaskKey[Classpath]("full-classpath", "The exported classpath, consisting of build products and unmanaged and managed, internal and external dependencies.")
 	
 	val internalConfigurationMap = SettingKey[Configuration => Configuration]("internal-configuration-map", "Maps configurations to the actual configuration used to define the classpath.")
-	val classpathConfiguration = SettingKey[Configuration]("classpath-configuration", "The configuration used to define the classpath.")
+	val classpathConfiguration = TaskKey[Configuration]("classpath-configuration", "The configuration used to define the classpath.")
 	val ivyConfiguration = TaskKey[IvyConfiguration]("ivy-configuration", "General dependency management (Ivy) settings, such as the resolvers and paths to use.")
 	val ivyConfigurations = SettingKey[Seq[Configuration]]("ivy-configurations", "The defined configurations for dependency management.  This may be different from the configurations for Project settings.")
 	val moduleSettings = TaskKey[ModuleSettings]("module-settings", "Module settings, which configure a specific module, such as a project.")
@@ -291,6 +295,7 @@ object Keys
 	val skip = TaskKey[Boolean]("skip", "For tasks that support it (currently only 'compile'), setting skip to true will force the task to not to do its work.  This exact semantics may vary by task.")
 
 	// special
+	val sessionVars = AttributeKey[SessionVar.Map]("session-vars", "Bindings that exist for the duration of the session.")
 	val parallelExecution = SettingKey[Boolean]("parallel-execution", "Enables (true) or disables (false) parallel execution of tasks.")
 	val settings = TaskKey[Settings[Scope]]("settings", "Provides access to the project data for the build.")
 	val streams = TaskKey[TaskStreams]("streams", "Provides streams for logging and persisting data.")

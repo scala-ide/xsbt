@@ -5,7 +5,8 @@ package sbt
 
 	import java.io.File
 	import java.net.URI
-	import compiler.{Discovered,Discovery,Eval,EvalImports}
+	import compiler.{Eval,EvalImports}
+	import xsbt.api.{Discovered,Discovery}
 	import classpath.ClasspathUtilities
 	import scala.annotation.tailrec
 	import collection.mutable
@@ -226,9 +227,11 @@ object Load
 
 	def load(file: File, s: State, config: LoadBuildConfiguration): PartBuild =
 	{
-		val loader = (uri: URI, local: File) => loadUnit(uri, local, s, config)
 		val fail = (uri: URI) => error("Invalid build URI: " + uri)
-		val builtinLoader = BuildLoader(loader, info => RetrieveUnit(info.staging, info.build), fail, config)
+		val resolver = (info: BuildLoader.ResolveInfo) => RetrieveUnit(info.staging, info.uri)
+		val build = (info: BuildLoader.BuildInfo) => Some((base: File) => loadUnit(info.uri, base, info.state, info.config))
+		val components = BuildLoader.components(resolver, build, full = BuildLoader.componentLoader)
+		val builtinLoader = BuildLoader(components, fail, s, config)
 		load(file, builtinLoader)
 	}
 	def load(file: File, loaders: BuildLoader): PartBuild = loadURI(IO.directoryURI(file), loaders)
@@ -240,7 +243,7 @@ object Load
 		new PartBuild(uri, map)
 	}
 	def addResolvers(unit: BuildUnit, isRoot: Boolean, loaders: BuildLoader): BuildLoader =
-		unit.definitions.builds.flatMap(_.buildResolvers) match
+		unit.definitions.builds.flatMap(_.buildLoaders) match
 		{
 			case Nil => loaders
 			case x :: xs =>

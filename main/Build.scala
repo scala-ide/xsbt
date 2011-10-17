@@ -19,7 +19,7 @@ trait Build
 	def projectDefinitions(baseDirectory: File): Seq[Project] = projects
 	def projects: Seq[Project] = ReflectUtilities.allVals[Project](this).values.toSeq
 	def settings: Seq[Setting[_]] = Defaults.buildCore
-	def buildResolvers: Seq[BuildLoader.BuildResolver] = Nil
+	def buildLoaders: Seq[BuildLoader.Components] = Nil
 }
 trait Plugin
 {
@@ -167,7 +167,7 @@ object Index
 		pairs.toMap[Task[_], ScopedKey[Task[_]]]
 	}
 	def allKeys(settings: Seq[Setting[_]]): Set[ScopedKey[_]] =
-		settings.flatMap(s => s.key +: s.dependencies).toSet
+		settings.flatMap(s => if(s.key.key.isLocal) Nil else s.key +: s.dependencies).filter(!_.key.isLocal).toSet
 	def attributeKeys(settings: Settings[Scope]): Set[AttributeKey[_]] =
 		settings.data.values.flatMap(_.keys).toSet[AttributeKey[_]]
 	def stringToKeyMap(settings: Set[AttributeKey[_]]): Map[String, AttributeKey[_]] =	

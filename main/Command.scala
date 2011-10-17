@@ -5,7 +5,6 @@ package sbt
 
 	import java.io.File
 	import complete.{DefaultParsers, EditDistance, Parser}
-	import CommandSupport.logger
 
 sealed trait Command {
 	def help: Seq[Help]
@@ -89,9 +88,10 @@ object Command
 		Parser.result(parser(state), command) match
 		{
 			case Right(s) => s() // apply command.  command side effects happen here
-			case Left((msgs,pos)) =>
+			case Left(failures) =>
+				val (msgs,pos) = failures()
 				val errMsg = commandError(command, msgs, pos)
-				logger(state).error(errMsg)
+				state.log.error(errMsg)
 				state.fail				
 		}
 	}

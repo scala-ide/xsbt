@@ -7,6 +7,7 @@ import Pre._
 import java.io.{File, FileWriter, PrintWriter, Writer}
 import java.util.concurrent.Callable
 import java.util.regex.Pattern
+import java.util.Properties
 
 import org.apache.ivy.{core, plugins, util, Ivy}
 import core.LogOptions
@@ -21,7 +22,7 @@ import core.retrieve.{RetrieveEngine, RetrieveOptions}
 import core.sort.SortEngine
 import core.settings.IvySettings
 import plugins.matcher.{ExactPatternMatcher, PatternMatcher}
-import plugins.resolver.{ChainResolver, FileSystemResolver, IBiblioResolver, URLResolver}
+import plugins.resolver.{BasicResolver, ChainResolver, FileSystemResolver, IBiblioResolver, URLResolver}
 import util.{DefaultMessageLogger, filter, Message, MessageLoggerEngine, url}
 import filter.Filter
 import url.CredentialsStore
@@ -45,10 +46,19 @@ final class Update(config: UpdateConfiguration)
 
 	private def addCredentials()
 	{
-		val List(realm, host, user, password) = List("sbt.boot.realm", "sbt.boot.host", "sbt.boot.user", "sbt.boot.password") map System.getProperty
-		if(realm != null && host != null && user != null && password != null)
-			CredentialsStore.INSTANCE.addCredentials(realm, host, user, password)
+		val optionProps = 
+			Option(System.getProperty("sbt.boot.credentials")) orElse 
+			Option(System.getenv("SBT_CREDENTIALS")) map ( path =>
+				ResolveValues.readProperties(new File(path)) 
+			)
+		optionProps foreach extractCredentials("realm","host","user","password")
+		extractCredentials("sbt.boot.realm","sbt.boot.host","sbt.boot.user","sbt.boot.password")(System.getProperties)
 	}
+	private def extractCredentials(keys: (String,String,String,String))(props: Properties) {
+		val List(realm, host, user, password) = keys.productIterator.map(key => props.getProperty(key.toString)).toList
+		if (realm != null && host != null && user != null && password != null)
+			CredentialsStore.INSTANCE.addCredentials(realm, host, user, password)
+        }
 	private lazy val settings =
 	{
 		addCredentials()
@@ -197,7 +207,7 @@ final class Update(config: UpdateConfiguration)
 	private def retrieve(eventManager: EventManager, module: ModuleDescriptor,  target: UpdateTarget)
 	{
 		val retrieveOptions = new RetrieveOptions
-		retrieveOptions.setArtifactFilter(new ArtifactFilter(a => "jar" == a.getType && a.getExtraAttribute("classifier") == null))
+		retrieveOptions.setArtifactFilter(new ArtifactFilter(a => retrieveType(a.getType) && a.getExtraAttribute("classifier") == null))
 		val retrieveEngine = new RetrieveEngine(settings, eventManager)
 		val pattern =
 			target match
@@ -207,6 +217,7 @@ final class Update(config: UpdateConfiguration)
 			}
 		retrieveEngine.retrieve(module.getModuleRevisionId, baseDirectoryName(scalaVersion) + "/" + pattern, retrieveOptions)
 	}
+	private def retrieveType(tpe: String): Boolean = tpe == "jar" || tpe == "bundle"
 	/** Add the scala tools repositories and a URL resolver to download sbt from the Google code project.*/
 	private def addResolvers(settings: IvySettings)
 	{
@@ -217,7 +228,7 @@ final class Update(config: UpdateConfiguration)
 		newDefault.setName("redefined-public")
 		if(repositories.isEmpty) error("No repositories defined.")
 		for(repo <- repositories if includeRepo(repo))
-			newDefault.add(toIvyRepository(settings, repo))
+			newDefault.add(initializeBasic(toIvyRepository(settings, repo)))
 		configureCache(settings)
 		settings.addResolver(newDefault)
 		settings.setDefaultResolver(newDefault.getName)
@@ -323,6 +334,12 @@ final class Update(config: UpdateConfiguration)
 		else
 			mavenResolver("Scala-Tools Maven2 Snapshots Repository", "http://scala-tools.org/repo-snapshots")
 	}
+	private def initializeBasic(resolver: BasicResolver) =
+	{
+		resolver.setDescriptor(BasicResolver.DESCRIPTOR_REQUIRED)
+		resolver
+	}
+
 	/** Logs the given message to a file and to the console. */
 	private def log(msg: String) =
 	{

@@ -15,25 +15,26 @@ object Sbt extends Build
 	override lazy val settings = super.settings ++ buildSettings ++ Status.settings
 	def buildSettings = Seq(
 		organization := "org.scala-tools.sbt",
-		version := "0.11.1",
+		version := "0.11.2",
 		publishArtifact in packageDoc := false,
 		scalaVersion := scalaVersionGlobal,
 		origScalaVersion := scalaVersionGlobal,
 		resolvers += ScalaToolsSnapshots,
 		resolvers += "Typesafe IDE repo" at ("http://typesafe.artifactoryonline.com/typesafe/ide-" + Release.cutVersion(scalaVersionGlobal)),
 		publishMavenStyle := true,
-		componentID := None)
+		componentID := None,
+		javacOptions in Compile ++= Seq("-target", "6", "-source", "6"))
 
   def localPublishSettings = Seq(
     otherResolvers += Resolver.file("some-id", file("/tmp/sbt/publish")),
     publishLocalConfiguration <<= (packagedArtifacts, deliverLocal, ivyLoggingLevel) map { 
-      (arts, _, level) => sbt.Classpaths.publishConfig(arts, None, resolverName = "some-id", logging = level ) 
+      (arts, _, level) => sbt.Classpaths.publishConfig(arts, None, Seq(), resolverName = "some-id", logging = level ) 
     }
     )
       
   lazy val origScalaVersion = SettingKey[String]("orig-scala-version")
   private val scalaVersionGlobal = "2.10.0-SNAPSHOT"
-      
+
 	lazy val myProvided = config("provided") intransitive;
 	override def projects = super.projects.map(p => p.copy(configurations = (p.configurations.filter(_ != Provided)) :+ myProvided) settings(localPublishSettings: _*))
 	lazy val root: Project = Project("xsbt", file("."), aggregate = nonRoots ) settings( rootSettings : _*) configs( Sxr.sxrConf, Proguard )
@@ -55,7 +56,8 @@ object Sbt extends Build
 	lazy val interfaceSub = project(file("interface"), "Interface") settings(interfaceSettings : _*)
 
 		// defines operations on the API of a source, including determining whether it has changed and converting it to a string
-	lazy val apiSub = baseProject(compilePath / "api", "API") dependsOn(interfaceSub)
+		//   and discovery of subclasses and annotations
+	lazy val apiSub = testedBaseProject(compilePath / "api", "API") dependsOn(interfaceSub)
 
 	/***** Utilities *****/
 
@@ -110,10 +112,7 @@ object Sbt extends Build
 	lazy val compilePersistSub = baseProject(compilePath / "persist", "Persist") dependsOn(compileIncrementalSub, apiSub) settings(sbinary)
 		// sbt-side interface to compiler.  Calls compiler-side interface reflectively
 	lazy val compilerSub = testedBaseProject(compilePath, "Compile") dependsOn(launchInterfaceSub, interfaceSub % "compile;test->test", ivySub, ioSub, classpathSub, 
-		logSub % "test->test", launchSub % "test->test", apiSub % "test->test") settings( compilerSettings : _*)
-
-		// Searches the source API data structures, currently looks for subclasses and annotations
-	lazy val discoverySub = testedBaseProject(compilePath / "discover", "Discovery") dependsOn(compileIncrementalSub, apiSub, compilerSub % "test->test")
+		logSub % "test->test", launchSub % "test->test", apiSub % "test") settings( compilerSettings : _*)
 
 	lazy val scriptedBaseSub = baseProject(scriptedPath / "base", "Scripted Framework") dependsOn(ioSub, processSub)
 	lazy val scriptedSbtSub = baseProject(scriptedPath / "sbt", "Scripted sbt") dependsOn(ioSub, logSub, processSub, scriptedBaseSub, launchInterfaceSub % "provided")
@@ -122,7 +121,7 @@ object Sbt extends Build
 
 		// Implementation and support code for defining actions.
 	lazy val actionsSub = baseProject(mainPath / "actions", "Actions") dependsOn(
-		classfileSub, classpathSub, compileIncrementalSub, compilePersistSub, compilerSub, completeSub, discoverySub,
+		classfileSub, classpathSub, compileIncrementalSub, compilePersistSub, compilerSub, completeSub, apiSub,
 		interfaceSub, ioSub, ivySub, logSub, processSub, runSub, stdTaskSub, taskSub, trackingSub, testingSub)
 
 		// The main integration project for sbt.  It brings all of the subsystems together, configures them, and provides for overriding conventions.
@@ -164,12 +163,9 @@ object Sbt extends Build
 	lazy val scriptedSource = SettingKey[File]("scripted-source")
 	lazy val publishAll = TaskKey[Unit]("publish-all")
 
-	def deepTasks[T](scoped: ScopedTask[Seq[T]]): Initialize[Task[Seq[T]]] = deep(scoped.task).map { _.flatMap(_.join.map(_.flatten)) }
-	def deep[T](scoped: ScopedSetting[T]): Initialize[Task[Seq[T]]] =
-		state map { s =>
-			val sxrProjects = projects filterNot Set(root, sbtSub, scriptedBaseSub, scriptedSbtSub, scriptedPluginSub) map { p => LocalProject(p.id) }
-			Defaults.inAllProjects(sxrProjects, scoped, Project.extract(s).structure.data)
-		}
+	def deepTasks[T](scoped: ScopedTask[Seq[T]]): Initialize[Task[Seq[T]]] = deep(scoped.task) { _.join.map(_.flatten) }
+	def deep[T](scoped: ScopedSetting[T]): Initialize[Seq[T]] =
+		Util.inAllProjects(projects filterNot Set(root, sbtSub, scriptedBaseSub, scriptedSbtSub, scriptedPluginSub) map { p => LocalProject(p.id) }, scoped)
 
 	def launchSettings = inConfig(Compile)(Transform.configSettings) ++ Seq(jline, ivy, //crossPaths := false,
     compile in Test <<= compile in Test dependsOn(publishLocal in interfaceSub, publishLocal in testSamples, publishLocal in launchInterfaceSub)
@@ -183,7 +179,7 @@ object Sbt extends Build
 		scripted <<= scriptedTask,
 		scriptedSource <<= (sourceDirectory in sbtSub) / "sbt-test",
 		sources in sxr <<= deepTasks(sources in Compile),
-		Sxr.sourceDirectories <<= deep(sourceDirectories in Compile).map(_.map(_.flatten)),
+		Sxr.sourceDirectories <<= deep(sourceDirectories in Compile).map(_.flatten),
 		fullClasspath in sxr <<= (externalDependencyClasspath in Compile in sbtSub).identity,
 		compileInputs in (Compile,sxr) <<= (sources in sxr, compileInputs in sbtSub in Compile, fullClasspath in sxr) map { (srcs, in, cp) =>
 			in.copy(config = in.config.copy(sources = srcs, classpath = cp.files))
@@ -209,15 +205,16 @@ object Sbt extends Build
   )
 
 	def precompiledSettings(scalav: String, additional: Seq[Setting[_]]) = additional ++ Seq(
-		artifact in packageBin <<= (scalaInstance in Compile, scalaVersion, origScalaVersion) apply { (si, sv, o) =>
+		artifact in packageBin <<= (appConfiguration, scalaVersion, origScalaVersion) apply { (app, sv, o) =>
 		  if (scalav == null) {
-		    val bincID = binIDshort + "_" + si.actualVersion
+		    val launcher = app.provider.scalaProvider.launcher
+		    val bincID = binIDshort + "_" + ScalaInstance(sv, launcher).actualVersion
 		    val binIDName = binIDshort + "_" + sv
         Artifact(binIDName) extra("e:component" -> bincID)
       } else {
         Artifact("precompiled-" + o + "-" + scalav.replace('.', '_'))
       }
-    },    
+    },
 		target <<= (target, scalaVersion) { (base, sv) => base / ("precompiled_" + sv) },
 		scalacOptions := Nil,
 		crossPaths := false,

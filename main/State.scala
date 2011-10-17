@@ -5,7 +5,7 @@ package sbt
 
 	import java.io.File
 	import java.util.concurrent.Callable
-	import CommandSupport.FailureWall
+	import CommandSupport.{FailureWall, logger}
 
 final case class State(
 	configuration: xsbti.AppConfiguration,
@@ -40,8 +40,10 @@ trait StateOps {
 	def get[T](key: AttributeKey[T]): Option[T]
 	def put[T](key: AttributeKey[T], value: T): State
 	def remove(key: AttributeKey[_]): State
+	def update[T](key: AttributeKey[T])(f: Option[T] => T): State
 	def has(key: AttributeKey[_]): Boolean
 	def baseDir: File
+	def log: Logger
 	def locked[T](file: File)(t: => T): T
 	def runExitHooks(): State
 	def addExitHook(f: => Unit): State
@@ -73,8 +75,10 @@ object State
 		def exit(ok: Boolean) = setResult(Some(Exit(if(ok) 0 else 1)))
 		def get[T](key: AttributeKey[T]) = s.attributes get key
 		def put[T](key: AttributeKey[T], value: T) = s.copy(attributes = s.attributes.put(key, value))
+		def update[T](key: AttributeKey[T])(f: Option[T] => T): State = put(key, f(get(key)))
 		def has(key: AttributeKey[_]) = s.attributes contains key
 		def remove(key: AttributeKey[_]) = s.copy(attributes = s.attributes remove key)
+		def log = CommandSupport.logger(s)
 		def fail =
 		{
 			val remaining = s.remainingCommands.dropWhile(_ != FailureWall)

@@ -24,12 +24,10 @@ object Task
 
 final case class Task[T](info: Info[T], work: Action[T])
 {
-	def original = info.original getOrElse this
-	override def toString = info.name orElse original.info.name getOrElse ("Task(" + info + ")")
+	override def toString = info.name getOrElse ("Task(" + info + ")")
 	override def hashCode = info.hashCode
 }
-/** `original` is used during transformation only.*/
-final case class Info[T](attributes: AttributeMap = AttributeMap.empty, original: Option[Task[T]] = None)
+final case class Info[T](attributes: AttributeMap = AttributeMap.empty, post: T => AttributeMap = const(AttributeMap.empty))
 {
 	import Info._
 	def name = attributes.get(Name)
@@ -37,12 +35,9 @@ final case class Info[T](attributes: AttributeMap = AttributeMap.empty, original
 	def setName(n: String) = set(Name, n)
 	def setDescription(d: String) = set(Description, d)
 	def set[T](key: AttributeKey[T], value: T) = copy(attributes = this.attributes.put(key, value))
+	def postTransform[A](f: (T, AttributeMap) => AttributeMap) = copy(post = (t: T) => f(t, post(t)) )
 
-	override def toString =
-		if(attributes.isEmpty && original.isEmpty)
-			"_"
-		else
-			attributes.toString + (original match { case Some(o) => ", original: " + o; case None => "" })
+	override def toString = if(attributes.isEmpty) "_" else attributes.toString
 }
 object Info
 {

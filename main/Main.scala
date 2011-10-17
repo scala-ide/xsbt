@@ -7,7 +7,7 @@ package sbt
 	import complete.{DefaultParsers, HistoryCommands, Parser}
 	import HistoryCommands.{Start => HistoryPrefix}
 	import compiler.EvalImports
-	import Types.idFun
+	import Types.{const,idFun}
 
 	import Command.applyEffect
 	import Keys.{analysis,historyPath,globalLogging,shellPrompt}
@@ -224,7 +224,7 @@ object BuiltinCommands
 	}
 	
 	def multiParser(s: State): Parser[Seq[String]] =
-		( token(';' ~> OptSpace) flatMap { _ => matched(s.combinedParser) <~ token(OptSpace) } ).+
+		( token(';' ~> OptSpace) flatMap { _ => matched(s.combinedParser | token(charClass(_ != ';').+, hide= const(true))) <~ token(OptSpace) } ).+
 	def multiApplied(s: State) = 
 		Command.applyEffect( multiParser(s) )( _ ::: s )
 
@@ -310,7 +310,7 @@ object BuiltinCommands
 	def history = Command.custom(historyParser, historyHelp)
 	def historyParser(s: State): Parser[() => State] =
 		Command.applyEffect(HistoryCommands.actionParser) { histFun =>
-			val logError = (msg: String) => CommandSupport.logger(s).error(msg)
+			val logError = (msg: String) => s.log.error(msg)
 			val hp = s get historyPath.key getOrElse None
 			val lines = hp.toList.flatMap( p => IO.readLines(p) ).toIndexedSeq
 			histFun( complete.History(lines, hp, logError) ) match
@@ -443,7 +443,7 @@ object BuiltinCommands
 	def loadProject = Command(LoadProject, LoadProjectBrief, LoadProjectDetailed)(_ => matched(Project.loadActionParser)) { (s,arg) => loadProjectCommands(arg) ::: s }
 
 	def loadProjectImpl = Command(LoadProjectImpl)(_ => Project.loadActionParser) { (s0, action) =>
-		val (s, base) = Project.loadAction(s0, action)
+		val (s, base) = Project.loadAction(SessionVar.clear(s0), action)
 		IO.createDirectory(base)
 		val (eval, structure) = Load.defaultLoad(s, base, logger(s))
 		val session = Load.initialSession(structure, eval)

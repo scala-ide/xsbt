@@ -14,6 +14,7 @@ package sbt
 	import java.net.URI
 	import Path._
 
+/** Parses input and produces a task to run.  Constructed using the companion object. */
 sealed trait InputTask[T] {
 	def mapTask[S](f: Task[T] => Task[S]): InputTask[S]
 }
@@ -70,40 +71,54 @@ object InputTask
 		apply(Project.value(p))(action)
 }
 
-sealed trait Scoped { def scope: Scope; def key: AttributeKey[_] }
+sealed trait Scoped { def scope: Scope; val key: AttributeKey[_] }
+
+/** A common type for SettingKey and TaskKey so that both can be used as inputs to tasks.*/
 sealed trait ScopedTaskable[T] extends Scoped
-sealed trait ScopedSetting[T] extends ScopedTaskable[T] with KeyedInitialize[T] with Scoped.ScopingSetting[ScopedSetting[T]] with Scoped.DefinableSetting[T] with Scoped.ListSetting[T, Id]
+
+/** Identifies a setting.  It consists of three parts: the scope, the name, and the type of a value associated with this key.
+* The scope is represented by a value of type Scope.
+* The name and the type are represented by a value of type AttributeKey[T].
+* Instances are constructed using the companion object. */
+sealed trait SettingKey[T] extends ScopedTaskable[T] with KeyedInitialize[T] with Scoped.ScopingSetting[SettingKey[T]] with Scoped.DefinableSetting[T] with Scoped.ListSetting[T, Id]
 {
-	def key: AttributeKey[T]
+	val key: AttributeKey[T]
 	def scopedKey: ScopedKey[T] = ScopedKey(scope, key)
-	def in(scope: Scope): ScopedSetting[T] = Scoped.scopedSetting(Scope.replaceThis(this.scope)(scope), this.key)
+	def in(scope: Scope): SettingKey[T] = Scoped.scopedSetting(Scope.replaceThis(this.scope)(scope), this.key)
 
 	protected[this] def make[S](other: Initialize[S])(f: (T, S) => T): Setting[T] = this <<= (this, other)(f)
 }
-sealed trait ScopedTask[T] extends ScopedTaskable[T] with KeyedInitialize[Task[T]] with Scoped.ScopingSetting[ScopedTask[T]] with Scoped.ListSetting[T, Task] with Scoped.DefinableTask[T]
+
+/** Identifies a task.  It consists of three parts: the scope, the name, and the type of the value computed by a task associated with this key.
+* The scope is represented by a value of type Scope.
+* The name and the type are represented by a value of type AttributeKey[Task[T]].
+* Instances are constructed using the companion object. */
+sealed trait TaskKey[T] extends ScopedTaskable[T] with KeyedInitialize[Task[T]] with Scoped.ScopingSetting[TaskKey[T]] with Scoped.ListSetting[T, Task] with Scoped.DefinableTask[T]
 {
-	def key: AttributeKey[Task[T]]
+	val key: AttributeKey[Task[T]]
 	def scopedKey: ScopedKey[Task[T]] = ScopedKey(scope, key)
-	def in(scope: Scope): ScopedTask[T] = Scoped.scopedTask(Scope.replaceThis(this.scope)(scope), this.key)
+	def in(scope: Scope): TaskKey[T] = Scoped.scopedTask(Scope.replaceThis(this.scope)(scope), this.key)
 
 	protected[this] def make[S](other: Initialize[Task[S]])(f: (T, S) => T): Setting[Task[T]] = this <<= (this, other) { (a,b) => (a,b) map f }
 }
-sealed trait ScopedInput[T] extends Scoped with KeyedInitialize[InputTask[T]] with Scoped.ScopingSetting[ScopedInput[T]] with Scoped.DefinableSetting[InputTask[T]]
+
+/** Identifies an input task.  An input task parses input and produces a task to run.
+* It consists of three parts: the scope, the name, and the type of the value produced by an input task associated with this key.
+* The scope is represented by a value of type Scope.
+* The name and the type are represented by a value of type AttributeKey[InputTask[T]].
+* Instances are constructed using the companion object. */
+sealed trait InputKey[T] extends Scoped with KeyedInitialize[InputTask[T]] with Scoped.ScopingSetting[InputKey[T]] with Scoped.DefinableSetting[InputTask[T]]
 {
-	def key: AttributeKey[InputTask[T]]
+	val key: AttributeKey[InputTask[T]]
 	def scopedKey: ScopedKey[InputTask[T]] = ScopedKey(scope, key)
-	def in(scope: Scope): ScopedInput[T] = Scoped.scopedInput(Scope.replaceThis(this.scope)(scope), this.key)
+	def in(scope: Scope): InputKey[T] = Scoped.scopedInput(Scope.replaceThis(this.scope)(scope), this.key)
 }
 
-sealed trait Key[T] extends Scoped { final def scope: Scope = Scope.ThisScope }
-final class SettingKey[T] private(val key: AttributeKey[T]) extends Key[T] with ScopedSetting[T]
-final class TaskKey[T] private(val key: AttributeKey[Task[T]]) extends Key[T] with ScopedTask[T]
-final class InputKey[T] private(val key: AttributeKey[InputTask[T]]) extends Key[InputTask[T]] with ScopedInput[T]
-
+/** Methods and types related to constructing settings, including keys, scopes, and initializations. */
 object Scoped
 {
-	implicit def taskScopedToKey[T](s: ScopedTask[T]): ScopedKey[Task[T]] = ScopedKey(s.scope, s.key)
-	implicit def inputScopedToKey[T](s: ScopedInput[T]): ScopedKey[InputTask[T]] = ScopedKey(s.scope, s.key)
+	implicit def taskScopedToKey[T](s: TaskKey[T]): ScopedKey[Task[T]] = ScopedKey(s.scope, s.key)
+	implicit def inputScopedToKey[T](s: InputKey[T]): ScopedKey[InputTask[T]] = ScopedKey(s.scope, s.key)
 
 	sealed trait ScopingSetting[Result]
 	{
@@ -119,9 +134,9 @@ object Scoped
 		def in(p: ScopeAxis[Reference], c: ScopeAxis[ConfigKey], t: ScopeAxis[AttributeKey[_]]): Result = in( Scope(p, c, t, This) )
 	}
 	
-	def scopedSetting[T](s: Scope, k: AttributeKey[T]): ScopedSetting[T]  =  new ScopedSetting[T] { val scope = s; val key = k}
-	def scopedInput[T](s: Scope, k: AttributeKey[InputTask[T]]): ScopedInput[T]  =  new ScopedInput[T] { val scope = s; val key = k }
-	def scopedTask[T](s: Scope, k: AttributeKey[Task[T]]): ScopedTask[T]  =  new ScopedTask[T] { val scope = s; val key = k }
+	def scopedSetting[T](s: Scope, k: AttributeKey[T]): SettingKey[T]  =  new SettingKey[T] { val scope = s; val key = k}
+	def scopedInput[T](s: Scope, k: AttributeKey[InputTask[T]]): InputKey[T]  =  new InputKey[T] { val scope = s; val key = k }
+	def scopedTask[T](s: Scope, k: AttributeKey[Task[T]]): TaskKey[T]  =  new TaskKey[T] { val scope = s; val key = k }
 
 	sealed trait ListSetting[S, M[_]]
 	{
@@ -148,31 +163,31 @@ object Scoped
 	}
 	final class RichInitialize[S](init: Initialize[S])
 	{
-		@deprecated("A call to 'identity' is no longer necessary and can be removed.")
+		@deprecated("A call to 'identity' is no longer necessary and can be removed.", "0.11.0")
 		final def identity: Initialize[S] = init
 		def map[T](f: S => T): Initialize[Task[T]] = init(s => mktask(f(s)) )
 		def flatMap[T](f: S => Task[T]): Initialize[Task[T]] = init(f)
 	}
 	sealed trait DefinableTask[S]
-	{ self: ScopedTask[S] =>
+	{ self: TaskKey[S] =>
 
 		private[sbt] def :==(value: S): Setting[Task[S]]  =  :=(value)
 		private[sbt] def ::=(value: Task[S]): Setting[Task[S]]  =  Project.setting(scopedKey, Project.value( value ))
 		def := (value: => S): Setting[Task[S]]  =  ::=(mktask(value))
-		private[sbt] def :== (v: ScopedSetting[S]): Setting[Task[S]] = <<=( v(constant))
+		private[sbt] def :== (v: SettingKey[S]): Setting[Task[S]] = <<=( v(constant))
 		def ~= (f: S => S): Setting[Task[S]]  =  Project.update(scopedKey)( _ map f )
 
 		def <<= (app: Initialize[Task[S]]): Setting[Task[S]]  =  Project.setting(scopedKey, app)
 
-		def task: ScopedSetting[Task[S]] = scopedSetting(scope, key)
+		def task: SettingKey[Task[S]] = scopedSetting(scope, key)
 		def get(settings: Settings[Scope]): Option[Task[S]] = settings.get(scope, key)
 
-		@deprecated("A call to 'identity' is no longer necessary and can be removed.")
+		@deprecated("A call to 'identity' is no longer necessary and can be removed.", "0.11.0")
 		def identity: Initialize[Task[S]] = this
 
 		def ? : Initialize[Task[Option[S]]] = Project.optional(scopedKey) { case None => mktask { None }; case Some(t) => t map some.fn }
 		def ??[T >: S](or: => T): Initialize[Task[T]] = Project.optional(scopedKey)( _ getOrElse mktask(or) )
-		def or[T >: S](i: Initialize[Task[T]]): Initialize[Task[T]] = (this.? zipWith scopedKey)( (x,y) => (x :^: y :^: KNil) map hf2( _ getOrElse _ ))
+		def or[T >: S](i: Initialize[Task[T]]): Initialize[Task[T]] = (this.? zipWith i)( (x,y) => (x :^: y :^: KNil) map hf2( _ getOrElse _ ))
 	}
 	final class RichInitializeTask[S](i: Initialize[Task[S]])
 	{
@@ -189,6 +204,15 @@ object Scoped
 		def && [T](alt: Task[T]): Initialize[Task[T]]  =  i(_ && alt)
 
 		def dependsOn(tasks: AnyInitTask*): Initialize[Task[S]] = (i, Initialize.joinAny(tasks)) { (thisTask, deps) => thisTask.dependsOn(deps : _*) }
+
+			import SessionVar.{persistAndSet, resolveContext, set, transform}
+
+		def updateState(f: (State, S) => State): Initialize[Task[S]] = i(t => transform(t, f))
+		def storeAs(key: TaskKey[S])(implicit f: sbinary.Format[S]): Initialize[Task[S]] = (Keys.resolvedScoped, i) { (scoped, task) =>
+			transform(task, (state, value) => persistAndSet( resolveContext(key, scoped.scope, state), state, value)(f))
+		}
+		def keepAs(key: TaskKey[S]): Initialize[Task[S]] =
+			(i, Keys.resolvedScoped)( (t,scoped) => transform(t, (state,value) => set(resolveContext(key, scoped.scope, state), state, value) ) )
 
 		def triggeredBy(tasks: AnyInitTask*): Initialize[Task[S]] = nonLocal(tasks, Keys.triggeredBy)
 		def runBefore(tasks: AnyInitTask*): Initialize[Task[S]] = nonLocal(tasks, Keys.runBefore)
@@ -210,15 +234,15 @@ object Scoped
 	}
 
 
-	implicit def richFileSetting(s: ScopedSetting[File]): RichFileSetting = new RichFileSetting(s)
-	implicit def richFilesSetting(s: ScopedSetting[Seq[File]]): RichFilesSetting = new RichFilesSetting(s)
+	implicit def richFileSetting(s: SettingKey[File]): RichFileSetting = new RichFileSetting(s)
+	implicit def richFilesSetting(s: SettingKey[Seq[File]]): RichFilesSetting = new RichFilesSetting(s)
 	
-	final class RichFileSetting(s: ScopedSetting[File]) extends RichFileBase
+	final class RichFileSetting(s: SettingKey[File]) extends RichFileBase
 	{
 		def /(c: String): Initialize[File] = s { _ / c }
 		protected[this] def map0(f: PathFinder => PathFinder) = s(file => finder(f)(file :: Nil))
 	}
-	final class RichFilesSetting(s: ScopedSetting[Seq[File]]) extends RichFileBase
+	final class RichFilesSetting(s: SettingKey[Seq[File]]) extends RichFileBase
 	{
 		def /(s: String): Initialize[Seq[File]] = map0 { _ / s }
 		protected[this] def map0(f: PathFinder => PathFinder) = s(finder(f))
@@ -234,18 +258,18 @@ object Scoped
 
 	/*
 	* Reduced and combine provide support for mixed Setting/Task flatMap/map.
-	* The general idea is to take a KList of ScopedTaskables, which are either ScopedSettings or ScopedTasks,
+	* The general idea is to take a KList of ScopedTaskables, which are either SettingKeys or TaskKeys,
 	*   and uniformly provide multi-flatMap/map for constructing a new Task.
 	* For example: {{{ (SettingKeyA, TaskKeyB) flatMap { (a,b) => ... } }}}
 	*/
 
 	trait Reduced[HLs <: HList, HLt <: HList, HLv <: HList]
 	{ o =>
-		def settings: KList[ScopedSetting, HLs]  // SS[A] :^: SS[Task[B]] :^: ...
+		def settings: KList[Initialize, HLs]  // SS[A] :^: SS[Task[B]] :^: ...
 		def tasks(hls: HLs): KList[Task, HLt]  // takes setting values from previous line to Task[B] :^: ...
 		def expand(hls: HLs, hlt: Results[HLt]): Results[HLv] // takes Result[B] :+: ... to Value[A] :+: Result[B] :+: ...
 
-		def prependTask[H](key: ScopedSetting[Task[H]]) =
+		def prependTask[H](key: Initialize[Task[H]]) =
 			new Reduced[Task[H] :+: HLs, H :+: HLt, H :+: HLv]
 			{
 				val settings = KCons(key, o.settings)
@@ -253,7 +277,7 @@ object Scoped
 				def expand(hls: Task[H] :+: HLs, hlt: Results[H :+: HLt]) = KCons(hlt.head, o.expand(hls.tail, hlt.tail) )
 			}
 
-		def prependSetting[H](key: ScopedSetting[H]) =
+		def prependSetting[H](key: Initialize[H]) =
 			new Reduced[H :+: HLs, HLt, H :+: HLv]
 			{
 				val settings = KCons(key, o.settings)
@@ -263,12 +287,12 @@ object Scoped
 		def prependTaskable[H](key: ScopedTaskable[H]): Reduced[_,_,H :+: HLv] =
 			key match
 			{
-				case ss: ScopedSetting[H] => prependSetting(ss)
-				case st: ScopedTask[H] => prependTask(scopedSetting(st.scope, st.key))
+				case ss: SettingKey[H] => prependSetting(ss)
+				case st: TaskKey[H] => prependTask(scopedSetting(st.scope, st.key))
 			}
 
 		def combine[D[_],S](c: Combine[D], f: Results[HLv] => D[S]): Initialize[Task[S]] =
-			Apply(settings)(hls => c(tasks(hls))(hlt => f(expand(hls, hlt))) )
+			Project.app(settings)(hls => c(tasks(hls))(hlt => f(expand(hls, hlt))) )
 	}
 	type RedHL[HL <: HList] = Reduced[_,_,HL]
 	def reduced[HL <: HList](settings: KList[ScopedTaskable, HL]): Reduced[_,_,HL] =
@@ -404,16 +428,6 @@ object Scoped
 	implicit def t8ToApp8[A,B,C,D,E,F,G,H](t8: (Initialize[A], Initialize[B], Initialize[C], Initialize[D], Initialize[E], Initialize[F], Initialize[G], Initialize[H]) ): Apply8[A,B,C,D,E,F,G,H] = new Apply8(t8)
 	implicit def t9ToApp9[A,B,C,D,E,F,G,H,I](t9: (Initialize[A], Initialize[B], Initialize[C], Initialize[D], Initialize[E], Initialize[F], Initialize[G], Initialize[H], Initialize[I]) ): Apply9[A,B,C,D,E,F,G,H,I] = new Apply9(t9)
 
-
-	object Apply
-	{
-		def apply[HL <: HList, T](in: KList[ScopedSetting, HL])(f: HL => T): Initialize[T] =
-			Project.app(in transform ssToSK)(f)
-
-		private val ssToSK = new (ScopedSetting ~> ScopedKey) { def apply[T](sk: ScopedSetting[T]) = new ScopedKey(sk.scope, sk.key) }
-	}	
-
-
 	def mkTuple2[A,B] = (a:A,b:B) => (a,b)
 	def mkTuple3[A,B,C] = (a:A,b:B,c:C) => (a,b,c)
 	def mkTuple4[A,B,C,D] = (a:A,b:B,c:C,d:D) => (a,b,c,d)
@@ -480,6 +494,7 @@ object Scoped
 
 	import Scoped.extendScoped
 
+/** Constructs InputKeys, which are associated with input tasks to define a setting.*/
 object InputKey
 {
 	def apply[T: Manifest](label: String, description: String = ""): InputKey[T] =
@@ -489,8 +504,10 @@ object InputKey
 		apply( AttributeKey[InputTask[T]](label, description, extendScoped(extend1, extendN)) )
 
 	def apply[T](akey: AttributeKey[InputTask[T]]): InputKey[T] =
-		new InputKey[T](akey)
+		new InputKey[T] { val key = akey; def scope = Scope.ThisScope }
 }
+
+/** Constructs TaskKeys, which are associated with tasks to define a setting.*/
 object TaskKey
 {
 	def apply[T: Manifest](label: String, description: String = ""): TaskKey[T] =
@@ -500,8 +517,12 @@ object TaskKey
 		apply( AttributeKey[Task[T]](label, description, extendScoped(extend1, extendN)) )
 
 	def apply[T](akey: AttributeKey[Task[T]]): TaskKey[T] =
-		new TaskKey[T](akey)
+		new TaskKey[T] { val key = akey; def scope = Scope.ThisScope }
+
+	def local[T: Manifest]: TaskKey[T] = apply[T](AttributeKey.local[Task[T]])
 }
+
+/** Constructs SettingKeys, which are associated with a value to define a basic setting.*/
 object SettingKey
 {
 	def apply[T: Manifest](label: String, description: String = ""): SettingKey[T] =
@@ -511,5 +532,7 @@ object SettingKey
 		apply( AttributeKey[T](label, description, extendScoped(extend1, extendN)) )
 
 	def apply[T](akey: AttributeKey[T]): SettingKey[T] =
-		new SettingKey[T](akey)
+		new SettingKey[T] { val key = akey; def scope = Scope.ThisScope }
+
+	def local[T: Manifest]: SettingKey[T] = apply[T](AttributeKey.local[T])
 }
