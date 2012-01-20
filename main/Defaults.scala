@@ -49,6 +49,7 @@ object Defaults extends BuildCommon
 		managedDirectory <<= baseDirectory(_ / "lib_managed")
 	))
 	def globalCore: Seq[Setting[_]] = inScope(GlobalScope)(Seq(
+		buildDependencies <<= buildDependencies or Classpaths.constructBuildDependencies,
 		taskTemporaryDirectory := IO.createTemporaryDirectory,
 		onComplete <<= taskTemporaryDirectory { dir => () => IO.delete(dir); IO.createDirectory(dir) },
 		parallelExecution :== true,
@@ -56,9 +57,12 @@ object Defaults extends BuildCommon
 		sbtResolver in GlobalScope <<= sbtVersion { sbtV => if(sbtV endsWith "-SNAPSHOT") Classpaths.typesafeSnapshots else Classpaths.typesafeResolver },
 		pollInterval :== 500,
 		logBuffered :== false,
+		connectInput :== false,
+		cancelable :== false,
 		autoScalaLibrary :== true,
 		onLoad <<= onLoad ?? idFun[State],
-		onUnload <<= onUnload ?? idFun[State],
+		onUnload <<= (onUnload ?? idFun[State]),
+		onUnload <<= (onUnload, taskTemporaryDirectory) { (f, dir) => s => { try f(s) finally IO.delete(dir) } },
 		watchingMessage <<= watchingMessage ?? Watched.defaultWatchingMessage,
 		triggeredMessage <<= triggeredMessage ?? Watched.defaultTriggeredMessage,
 		definesClass :== FileValueCache(Locate.definesClass _ ).get,
@@ -79,7 +83,7 @@ object Defaults extends BuildCommon
 		extraLoggers :== { _ => Nil },
 		skip :== false,
 		watchSources :== Nil,
-		version :== "0.1",
+		version :== "0.1-SNAPSHOT",
 		outputStrategy :== None,
 		exportJars :== false,
 		fork :== false,
@@ -99,7 +103,7 @@ object Defaults extends BuildCommon
 		artifactClassifier :== None,
 		artifactClassifier in packageSrc :== Some(SourceClassifier),
 		artifactClassifier in packageDoc :== Some(DocClassifier),
-		checksums :== IvySbt.DefaultChecksums,
+		checksums <<= appConfiguration(Classpaths.bootChecksums),
 		pomExtra :== NodeSeq.Empty,
 		pomPostProcess :== idFun,
 		pomAllRepositories :== false,
@@ -229,6 +233,9 @@ object Defaults extends BuildCommon
 	}
 	def watchTransitiveSourcesTask: Initialize[Task[Seq[File]]] =
 		inDependencies[Task[Seq[File]]](watchSources.task, const(std.TaskExtra.constant(Nil)), aggregate = true, includeRoot = true) apply { _.join.map(_.flatten) }
+
+	def transitiveUpdateTask: Initialize[Task[Seq[UpdateReport]]] =
+		forDependencies(ref => (update.task in ref).?, aggregate = false, includeRoot = false) apply( _.flatten.join)
 
 	def watchSetting: Initialize[Watched] = (pollInterval, thisProjectRef, watchingMessage, triggeredMessage) { (interval, base, msg, trigMsg) =>
 		new Watched {
@@ -427,9 +434,10 @@ object Defaults extends BuildCommon
 
 	def runnerTask = runner <<= runnerInit
 	def runnerInit: Initialize[Task[ScalaRun]] = 
-		(taskTemporaryDirectory, scalaInstance, baseDirectory, javaOptions, outputStrategy, fork, javaHome, trapExit) map { (tmp, si, base, options, strategy, forkRun, javaHomeDir, trap) =>
+		(taskTemporaryDirectory, scalaInstance, baseDirectory, javaOptions, outputStrategy, fork, javaHome, trapExit, connectInput) map {
+				(tmp, si, base, options, strategy, forkRun, javaHomeDir, trap, connectIn) =>
 			if(forkRun) {
-				new ForkRun( ForkOptions(scalaJars = si.jars, javaHome = javaHomeDir, outputStrategy = strategy,
+				new ForkRun( ForkOptions(scalaJars = si.jars, javaHome = javaHomeDir, connectInput = connectIn, outputStrategy = strategy,
 					runJVMOptions = options, workingDirectory = Some(base)) )
 			} else
 				new Run(si, trap, tmp)
@@ -539,8 +547,11 @@ object Defaults extends BuildCommon
 	}
 
 	def inDependencies[T](key: SettingKey[T], default: ProjectRef => T, includeRoot: Boolean = true, classpath: Boolean = true, aggregate: Boolean = false): Initialize[Seq[T]] =
+		forDependencies[T,T](ref => (key in ref) ?? default(ref), includeRoot, classpath, aggregate)
+
+	def forDependencies[T,V](init: ProjectRef => Initialize[V], includeRoot: Boolean = true, classpath: Boolean = true, aggregate: Boolean = false): Initialize[Seq[V]] =
 		Project.bind( (loadedBuild, thisProjectRef).identity ) { case (lb, base) =>
-			transitiveDependencies(base, lb, includeRoot, classpath, aggregate) map ( ref => (key in ref) ?? default(ref) ) join ;
+			transitiveDependencies(base, lb, includeRoot, classpath, aggregate) map init join ;
 		}
 
 	def transitiveDependencies(base: ProjectRef, structure: LoadedBuild, includeRoot: Boolean, classpath: Boolean = true, aggregate: Boolean = false): Seq[ProjectRef] =
@@ -679,7 +690,7 @@ object Classpaths
 			val base = projDeps ++ libDeps
 			if(isPlugin) sbtDep.copy(configurations = Some(Provided.name)) +: base else base
 		},
-		ivyLoggingLevel in GlobalScope :== UpdateLogging.Quiet,
+		ivyLoggingLevel in GlobalScope :== UpdateLogging.DownloadOnly,
 		ivyXML in GlobalScope :== NodeSeq.Empty,
 		ivyValidate in GlobalScope :== false,
 		ivyScala <<= ivyScala or (scalaHome, scalaVersion, scalaVersion in update) { (sh,v,vu) =>
@@ -718,8 +729,10 @@ object Classpaths
 		},
 		ivySbt <<= ivySbt0,
 		ivyModule <<= (ivySbt, moduleSettings) map { (ivySbt, settings) => new ivySbt.Module(settings) },
-		update <<= (ivyModule, thisProjectRef, updateConfiguration, cacheDirectory, scalaInstance, streams) map { (module, ref, config, cacheDirectory, si, s) =>
-			cachedUpdate(cacheDirectory / "update", Project.display(ref), module, config, Some(si), s.log)
+		transitiveUpdate <<= transitiveUpdateTask,
+		update <<= (ivyModule, thisProjectRef, updateConfiguration, cacheDirectory, scalaInstance, transitiveUpdate, streams) map { (module, ref, config, cacheDirectory, si, reports, s) =>
+			val depsUpdated = reports.exists(!_.stats.cached)
+			cachedUpdate(cacheDirectory / "update", Project.display(ref), module, config, Some(si), depsUpdated, s.log)
 		},
 		update <<= (conflictWarning, update, streams) map { (config, report, s) => ConflictWarning(config, report, s.log); report },
 		transitiveClassifiers in GlobalScope :== Seq(SourceClassifier, DocClassifier),
@@ -794,7 +807,7 @@ object Classpaths
 		}})
 	}
 
-	def cachedUpdate(cacheFile: File, label: String, module: IvySbt#Module, config: UpdateConfiguration, scalaInstance: Option[ScalaInstance], log: Logger): UpdateReport =
+	def cachedUpdate(cacheFile: File, label: String, module: IvySbt#Module, config: UpdateConfiguration, scalaInstance: Option[ScalaInstance], depsUpdated: Boolean, log: Logger): UpdateReport =
 	{
 		implicit val updateCache = updateIC
 		implicit val updateReport = updateReportF
@@ -805,11 +818,16 @@ object Classpaths
 			log.info("Done updating.")
 			scalaInstance match { case Some(si) => substituteScalaFiles(si, r); case None => r }
 		}
+		def uptodate(inChanged: Boolean, out: UpdateReport): Boolean =
+			!depsUpdated &&
+			!inChanged &&
+			out.allFiles.forall(_.exists) &&
+			out.cachedDescriptor.exists
 
 		val f =
 			Tracked.inputChanged(cacheFile / "inputs") { (inChanged: Boolean, in: In) =>
 				val outCache = Tracked.lastOutput[In, UpdateReport](cacheFile / "output") {
-					case (_, Some(out)) if !inChanged && out.allFiles.forall(_.exists) && out.cachedDescriptor.exists => out
+					case (_, Some(out)) if uptodate(inChanged, out) => out
 					case _ => work(in)
 				}
 				outCache(in)
@@ -837,20 +855,19 @@ object Classpaths
 
 	def deliverPattern(outputPath: File): String  =  (outputPath / "[artifact]-[revision](-[classifier]).[ext]").absolutePath
 
-	def projectDependenciesTask =
-		(thisProject, settings) map { (p, data) =>
-			p.dependencies flatMap { dep => (projectID in dep.project) get data map { _.copy(configurations = dep.configuration) } }
+	def projectDependenciesTask: Initialize[Task[Seq[ModuleID]]] =
+		(thisProjectRef, settings, buildDependencies) map { (ref, data, deps) =>
+			deps.classpath(ref) flatMap { dep => (projectID in dep.project) get data map { _.copy(configurations = dep.configuration) } }
 		}
 
 	def depMap: Initialize[Task[Map[ModuleRevisionId, ModuleDescriptor]]] =
-		(thisProject, thisProjectRef, settings, streams) flatMap { (root, rootRef, data, s) =>
-			val dependencies = (p: (ProjectRef, ResolvedProject)) => p._2.dependencies.flatMap(pr => thisProject in pr.project get data map { (pr.project, _) })
-			depMap(Dag.topologicalSort((rootRef,root))(dependencies).dropRight(1), data, s.log)
+		(thisProjectRef, settings, buildDependencies, streams) flatMap { (root, data, deps, s) =>
+			depMap(deps classpathTransitiveRefs root, data, s.log)
 		}
 
-	def depMap(projects: Seq[(ProjectRef,ResolvedProject)], data: Settings[Scope], log: Logger): Task[Map[ModuleRevisionId, ModuleDescriptor]] =
-		projects.flatMap { case (p,_) => ivyModule in p get data }.join.map { mods =>
-			mods map { _.dependencyMapping(log) } toMap ;
+	def depMap(projects: Seq[ProjectRef], data: Settings[Scope], log: Logger): Task[Map[ModuleRevisionId, ModuleDescriptor]] =
+		projects.flatMap( ivyModule in _ get data).join.map { mod =>
+			mod map { _.dependencyMapping(log) } toMap ;
 		}
 
 	def projectResolverTask: Initialize[Task[Resolver]] =
@@ -866,10 +883,23 @@ object Classpaths
 			(if(useJars) Seq(pkgTask).join else psTask) map { _ map { f => analyzed(f, analysis) } }
 		}
 
+	def constructBuildDependencies: Initialize[BuildDependencies] =
+		loadedBuild { lb =>
+				import collection.mutable.HashMap
+			val agg = new HashMap[ProjectRef, Seq[ProjectRef]]
+			val cp = new HashMap[ProjectRef, Seq[ClasspathDep[ProjectRef]]]
+			for(lbu <- lb.units.values; rp <- lbu.defined.values)
+			{
+				val ref = ProjectRef(lbu.unit.uri, rp.id)
+				cp(ref) = rp.dependencies
+				agg(ref) = rp.aggregate
+			}
+			BuildDependencies(cp.toMap, agg.toMap)
+		}
 	def internalDependencies: Initialize[Task[Classpath]] =
-		(thisProjectRef, thisProject, classpathConfiguration, configuration, settings) flatMap internalDependencies0
+		(thisProjectRef, classpathConfiguration, configuration, settings, buildDependencies) flatMap internalDependencies0
 	def unmanagedDependencies: Initialize[Task[Classpath]] =
-		(thisProjectRef, thisProject, configuration, settings) flatMap unmanagedDependencies0
+		(thisProjectRef, configuration, settings, buildDependencies) flatMap unmanagedDependencies0
 	def mkIvyConfiguration: Initialize[Task[IvyConfiguration]] =
 		(fullResolvers, ivyPaths, otherResolvers, moduleConfigurations, offline, checksums in update, appConfiguration, streams) map { (rs, paths, other, moduleConfs, off, check, app, s) =>
 			new InlineIvyConfiguration(paths, rs, other, moduleConfs, off, Some(lock(app)), check, s.log)
@@ -877,19 +907,18 @@ object Classpaths
 
 		import java.util.LinkedHashSet
 		import collection.JavaConversions.asScalaSet
-	def interSort(projectRef: ProjectRef, project: ResolvedProject, conf: Configuration, data: Settings[Scope]): Seq[(ProjectRef,String)] =
+	def interSort(projectRef: ProjectRef, conf: Configuration, data: Settings[Scope], deps: BuildDependencies): Seq[(ProjectRef,String)] =
 	{
 		val visited = asScalaSet(new LinkedHashSet[(ProjectRef,String)])
-		def visit(p: ProjectRef, project: ResolvedProject, c: Configuration)
+		def visit(p: ProjectRef, c: Configuration)
 		{
 			val applicableConfigs = allConfigs(c)
 			for(ac <- applicableConfigs) // add all configurations in this project
 				visited add (p, ac.name)
 			val masterConfs = names(getConfigurations(projectRef, data))
 
-			for( ResolvedClasspathDependency(dep, confMapping) <- project.dependencies)
+			for( ResolvedClasspathDependency(dep, confMapping) <- deps.classpath(p))
 			{
-				val depProject = thisProject in dep get data getOrElse error("Invalid project: " + dep)
 				val configurations = getConfigurations(dep, data)
 				val mapping = mapped(confMapping, masterConfs, names(configurations), "compile", "*->compile")
 				// map master configuration 'c' and all extended configurations to the appropriate dependency configuration
@@ -897,21 +926,21 @@ object Classpaths
 				{
 					for(depConf <- confOpt(configurations, depConfName) )
 						if( ! visited( (dep, depConfName) ) )
-							visit(dep, depProject, depConf)
+							visit(dep, depConf)
 				}
 			}
 		}
-		visit(projectRef, project, conf)
+		visit(projectRef, conf)
 		visited.toSeq
 	}
-	def unmanagedDependencies0(projectRef: ProjectRef, project: ResolvedProject, conf: Configuration, data: Settings[Scope]): Task[Classpath] =
-		interDependencies(projectRef, project, conf, conf, data, true, unmanagedLibs)
-	def internalDependencies0(projectRef: ProjectRef, project: ResolvedProject, conf: Configuration, self: Configuration, data: Settings[Scope]): Task[Classpath] =
-		interDependencies(projectRef, project, conf, self, data, false, productsTask)
-	def interDependencies(projectRef: ProjectRef, project: ResolvedProject, conf: Configuration, self: Configuration, data: Settings[Scope], includeSelf: Boolean,
+	def unmanagedDependencies0(projectRef: ProjectRef, conf: Configuration, data: Settings[Scope], deps: BuildDependencies): Task[Classpath] =
+		interDependencies(projectRef, deps, conf, conf, data, true, unmanagedLibs)
+	def internalDependencies0(projectRef: ProjectRef, conf: Configuration, self: Configuration, data: Settings[Scope], deps: BuildDependencies): Task[Classpath] =
+		interDependencies(projectRef, deps, conf, self, data, false, productsTask)
+	def interDependencies(projectRef: ProjectRef, deps: BuildDependencies, conf: Configuration, self: Configuration, data: Settings[Scope], includeSelf: Boolean,
 		f: (ProjectRef, String, Settings[Scope]) => Task[Classpath]): Task[Classpath] =
 	{
-		val visited = interSort(projectRef, project, conf, data)
+		val visited = interSort(projectRef, conf, data, deps)
 		val tasks = asScalaSet(new LinkedHashSet[Task[Classpath]])
 		for( (dep, c) <- visited )
 			if(includeSelf || (dep != projectRef) || (conf.name != c && self.name != c))
@@ -1010,6 +1039,10 @@ object Classpaths
 	def bootIvyHome(app: xsbti.AppConfiguration): Option[File] =
 		try { Option(app.provider.scalaProvider.launcher.ivyHome) }
 		catch { case _: NoSuchMethodError => None }
+
+	def bootChecksums(app: xsbti.AppConfiguration): Seq[String] =
+		try { app.provider.scalaProvider.launcher.checksums.toSeq }
+		catch { case _: NoSuchMethodError => IvySbt.DefaultChecksums }
 
 	def bootRepositories(app: xsbti.AppConfiguration): Option[Seq[Resolver]] =
 		try { Some(app.provider.scalaProvider.launcher.ivyRepositories.toSeq map bootRepository) }

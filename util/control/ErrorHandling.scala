@@ -3,11 +3,16 @@
  */
 package sbt
 
+	import java.io.IOException
+
 object ErrorHandling
 {
 	def translate[T](msg: => String)(f: => T) =
 		try { f }
-		catch { case e: Exception => throw new TranslatedException(msg + e.toString, e) }
+		catch {
+			case e: IOException => throw new TranslatedIOException(msg + e.toString, e)
+			case e: Exception => throw new TranslatedException(msg + e.toString, e)
+		}
 
 	def wideConvert[T](f: => T): Either[Throwable, T] =
 		try { Right(f) }
@@ -31,7 +36,8 @@ object ErrorHandling
 		else
 			e.toString
 }
-final class TranslatedException private[sbt](msg: String, cause: Throwable) extends RuntimeException(msg, cause)
+sealed class TranslatedException private[sbt](msg: String, cause: Throwable) extends RuntimeException(msg, cause)
 {
 	override def toString = msg
 }
+final class TranslatedIOException private[sbt](msg: String, cause: IOException) extends TranslatedException(msg, cause)

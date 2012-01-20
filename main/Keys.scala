@@ -39,6 +39,7 @@ object Keys
 	val stateBuildStructure = AttributeKey[Load.BuildStructure]("build-structure", "Data structure containing all information about the build definition.")
 	val buildStructure = TaskKey[Load.BuildStructure]("build-structure", "Provides access to the build structure, settings, and streams manager.")
 	val loadedBuild = SettingKey[Load.LoadedBuild]("loaded-build", "Provides access to the loaded project structure.  This is the information available before settings are evaluated.")
+	val buildDependencies = SettingKey[BuildDependencies]("build-dependencies", "Definitive source of inter-project dependencies for compilation and dependency management.\n\tThis is populated by default by the dependencies declared on Project instances, but may be modified.\n\tThe main restriction is that new builds may not be introduced.")
 	val appConfiguration = SettingKey[xsbti.AppConfiguration]("app-configuration", "Provides access to the launched sbt configuration, including the ScalaProvider, Launcher, and GlobalLock.")
 	val thisProject = SettingKey[ResolvedProject]("this-project", "Provides the current project for the referencing scope.")
 	val thisProjectRef = SettingKey[ProjectRef]("this-project-ref", "Provides a fully-resolved reference to the current project for the referencing scope.")
@@ -55,7 +56,7 @@ object Keys
 //	val onComplete = SettingKey[RMap[Task,Result] => RMap[Task,Result]]("on-complete", "Transformation to apply to the final task result map.  This may also be used to register hooks to run when task evaluation completes.")
 
 	// Command keys
-	val globalLogging = SettingKey[GlobalLogging]("global-logging", "Provides a global Logger, including command logging.")
+	val globalLogging = AttributeKey[GlobalLogging]("global-logging", "Provides a global Logger, including command logging.")
 	val historyPath = SettingKey[Option[File]]("history", "The location where command line history is persisted.")
 	val shellPrompt = SettingKey[State => String]("shell-prompt", "The function that constructs the command prompt from the current build state.")
 	val analysis = AttributeKey[inc.Analysis]("analysis", "Analysis of compilation, including dependencies and generated outputs.")
@@ -175,6 +176,7 @@ object Keys
 
 	val fork = SettingKey[Boolean]("fork", "If true, forks a new JVM when running.  If false, runs in the same JVM as the build.")
 	val outputStrategy = SettingKey[Option[sbt.OutputStrategy]]("output-strategy", "Selects how to log output when running a main class.")
+	val connectInput = SettingKey[Boolean]("connect-input", "If true, connects standard input when running a main class forked.")
 	val javaHome = SettingKey[Option[File]]("java-home", "Selects the Java installation used for compiling and forking.  If None, uses the Java installation running the build.")
 	val javaOptions = SettingKey[Seq[String]]("java-options", "Options passed to a new JVM when forking.")
 
@@ -229,6 +231,7 @@ object Keys
 	val ivySbt = TaskKey[IvySbt]("ivy-sbt", "Provides the sbt interface to Ivy.")
 	val ivyModule = TaskKey[IvySbt#Module]("ivy-module", "Provides the sbt interface to a configured Ivy module.")
 	val update = TaskKey[UpdateReport]("update", "Resolves and optionally retrieves dependencies, producing a report.")
+	val transitiveUpdate = TaskKey[Seq[UpdateReport]]("transitive-update", "UpdateReports for the internal dependencies of this project.")
 	val updateClassifiers = TaskKey[UpdateReport]("update-classifiers", "Resolves and optionally retrieves classified artifacts, such as javadocs and sources, for dependency definitions, transitively.", update)
 	val transitiveClassifiers = SettingKey[Seq[String]]("transitive-classifiers", "List of classifiers used for transitively obtaining extra artifacts for sbt or declared dependencies.")
 	val updateSbtClassifiers = TaskKey[UpdateReport]("update-sbt-classifiers", "Resolves and optionally retrieves classifiers, such as javadocs and sources, for sbt, transitively.", updateClassifiers)
@@ -297,6 +300,7 @@ object Keys
 	// special
 	val sessionVars = AttributeKey[SessionVar.Map]("session-vars", "Bindings that exist for the duration of the session.")
 	val parallelExecution = SettingKey[Boolean]("parallel-execution", "Enables (true) or disables (false) parallel execution of tasks.")
+	val cancelable = SettingKey[Boolean]("cancelable", "Enables (true) or disables (false) the ability to interrupt task execution with CTRL+C.")
 	val settings = TaskKey[Settings[Scope]]("settings", "Provides access to the project data for the build.")
 	val streams = TaskKey[TaskStreams]("streams", "Provides streams for logging and persisting data.")
 	val isDummyTask = AttributeKey[Boolean]("is-dummy-task", "Internal: used to identify dummy tasks.  sbt injects values for these tasks at the start of task execution.")

@@ -29,7 +29,7 @@ final class xMain extends xsbti.AppMain
 		import CommandSupport.{DefaultsCommand, InitCommand}
 		val initialCommandDefs = Seq(initialize, defaults)
 		val commands = DefaultsCommand +: InitCommand +: (DefaultBootCommands ++ configuration.arguments.map(_.trim))
-		val state = State( configuration, initialCommandDefs, Set.empty, None, commands, initialAttributes, None )
+		val state = State( configuration, initialCommandDefs, Set.empty, None, commands, State.newHistory, initialAttributes, State.Continue )
 		MainLoop.runLogged(state)
 	}
 }
@@ -39,7 +39,7 @@ final class ScriptMain extends xsbti.AppMain
 	{
 		import BuiltinCommands.{initialAttributes, ScriptCommands}
 		val commands = Script.Name +: configuration.arguments.map(_.trim)
-		val state = State( configuration, ScriptCommands, Set.empty, None, commands, initialAttributes, None )
+		val state = State( configuration, ScriptCommands, Set.empty, None, commands, State.newHistory, initialAttributes, State.Continue )
 		MainLoop.runLogged(state)
 	}	
 }
@@ -49,37 +49,72 @@ final class ConsoleMain extends xsbti.AppMain
 	{
 		import BuiltinCommands.{initialAttributes, ConsoleCommands}
 		val commands = IvyConsole.Name +: configuration.arguments.map(_.trim)
-		val state = State( configuration, ConsoleCommands, Set.empty, None, commands, initialAttributes, None )
+		val state = State( configuration, ConsoleCommands, Set.empty, None, commands, State.newHistory, initialAttributes, State.Continue )
 		MainLoop.runLogged(state)
 	}
 }
 object MainLoop
 {
+	/** Entry point to run the remaining commands in State with managed global logging.*/
 	def runLogged(state: State): xsbti.MainResult =
-	{
-		val logFile = File.createTempFile("sbt", ".log")
-		try {
-			val result = runLogged(state, logFile)
-			logFile.delete() // only delete when exiting normally
-			result
+		runLoggedLoop(state, GlobalLogBacking(newBackingFile(), None))
+
+	/** Constructs a new, (weakly) unique, temporary file to use as the backing for global logging. */
+	def newBackingFile(): File = File.createTempFile("sbt",".log")
+
+	/** Run loop that evaluates remaining commands and manages changes to global logging configuration.*/
+	@tailrec def runLoggedLoop(state: State, logBacking: GlobalLogBacking): xsbti.MainResult =
+		runAndClearLast(state, logBacking) match {
+			case ret: Return =>  // delete current and last log files when exiting normally
+				logBacking.file.delete()
+				deleteLastLog(logBacking) 
+				ret.result
+			case clear: ClearGlobalLog => // delete previous log file, move current to previous, and start writing to a new file
+				deleteLastLog(logBacking)
+				runLoggedLoop(clear.state, logBacking shift newBackingFile())
+			case keep: KeepGlobalLog => // make previous log file the current log file
+				logBacking.file.delete
+				runLoggedLoop(keep.state, logBacking.unshift)
 		}
+		
+	/** Runs the next sequence of commands, cleaning up global logging after any exceptions. */
+	def runAndClearLast(state: State, logBacking: GlobalLogBacking): RunNext =
+		try
+			runWithNewLog(state, logBacking)
 		catch {
-			case e: xsbti.FullReload => throw e
-			case e => System.err.println("sbt appears to be exiting abnormally.\n  The log file for this session is at " + logFile); throw e			
-		}
-	}
-	def runLogged(state: State, backing: File): xsbti.MainResult =
-		Using.fileWriter()(backing) { writer =>
-			val out = new java.io.PrintWriter(writer)
-			val loggedState = state.put(globalLogging.key, LogManager.globalDefault(out, backing))
-			try { run(loggedState) } finally { out.close() }
+			case e: xsbti.FullReload =>
+				deleteLastLog(logBacking)
+				throw e // pass along a reboot request
+			case e =>
+				System.err.println("sbt appears to be exiting abnormally.\n  The log file for this session is at " + logBacking.file)
+				deleteLastLog(logBacking)
+				throw e
 		}
 
-	@tailrec def run(state: State): xsbti.MainResult =
-		state.result match
+	/** Deletes the previous global log file. */
+	def deleteLastLog(logBacking: GlobalLogBacking): Unit =
+		logBacking.last.foreach(_.delete())
+
+	/** Runs the next sequence of commands with global logging in place. */
+	def runWithNewLog(state: State, logBacking: GlobalLogBacking): RunNext =
+		Using.fileWriter(append = true)(logBacking.file) { writer =>
+			val out = new java.io.PrintWriter(writer)
+			val loggedState = state.put(globalLogging, LogManager.globalDefault(out, logBacking))
+			try run(loggedState) finally out.close()
+		}
+	sealed trait RunNext
+	final class ClearGlobalLog(val state: State) extends RunNext
+	final class KeepGlobalLog(val state: State) extends RunNext
+	final class Return(val result: xsbti.MainResult) extends RunNext
+
+	/** Runs the next sequence of commands that doesn't require global logging changes.*/
+	@tailrec def run(state: State): RunNext =
+		state.next match
 		{
-			case None => run(next(state))
-			case Some(result) => result
+			case State.Continue => run(next(state))
+			case State.ClearGlobalLog => new ClearGlobalLog(state.continue)
+			case State.KeepLastLog => new KeepGlobalLog(state.continue)
+			case ret: State.Return => new Return(ret.result)
 		}
 
 	def next(state: State): State =
@@ -106,27 +141,27 @@ object BuiltinCommands
 	def nop = Command.custom(s => success(() => s))
 	def ignore = Command.command(FailureWall)(idFun)
 
-	def detail(selected: Iterable[String])(h: Help): Option[String] =
-		h.detail match { case (commands, value) => if( selected exists commands ) Some(value) else None }
+	def detail(selected: Seq[String], detailMap: Map[String, String]): Seq[String] =
+		selected.distinct flatMap { detailMap get _ }
 
 	def help = Command.make(HelpCommand, helpBrief, helpDetailed)(helpParser)
 	def about = Command.command(AboutCommand, aboutBrief, aboutDetailed) { s => logger(s).info(aboutString(s)); s }
 
 	def helpParser(s: State) =
 	{
-		val h = s.definedCommands.flatMap(_.help)
-		val helpCommands = h.flatMap(_.detail._1)
-		val args = (token(Space) ~> token( OpOrID.examples(helpCommands : _*) )).*
+		val h = (Help.empty /: s.definedCommands)(_ ++ _.help(s))
+		val helpCommands = h.detail.keySet
+		val args = (token(Space) ~> token( NotSpace examples helpCommands  )).*
 		applyEffect(args)(runHelp(s, h))
 	}
 	
-	def runHelp(s: State, h: Seq[Help])(args: Seq[String]): State =
+	def runHelp(s: State, h: Help)(args: Seq[String]): State =
 	{
 		val message =
 			if(args.isEmpty)
-				aligned("  ", "   ", h.map(_.brief)).mkString("\n", "\n", "\n")
+				aligned("  ", "   ", h.brief).mkString("\n", "\n", "\n")
 			else
-				h flatMap detail(args) mkString("\n", "\n\n", "\n")
+				detail(args, h.detail) mkString("\n", "\n\n", "\n")
 		System.out.println(message)
 		s
 	}
@@ -136,8 +171,7 @@ object BuiltinCommands
 	{
 		"This is sbt " + sbtVersion(s) + "\n" +
 		aboutProject(s) +
-		"sbt, sbt plugins, and build definitions are using Scala " + scalaVersion(s) + "\n" +
-		"All logging output for this session is available at " + CommandSupport.globalLogging(s).backing
+		"sbt, sbt plugins, and build definitions are using Scala " + scalaVersion(s) + "\n"
 	}
 	def aboutProject(s: State): String =
 		if(Project.isProjectLoaded(s))
@@ -176,14 +210,17 @@ object BuiltinCommands
 		System.out.println(tasksHelp(s))
 		s
 	}
-	def tasksHelp(s: State): String =
+	def taskDetail(s: State): Seq[(String,String)] = taskKeys(s) flatMap taskStrings
+	def taskKeys(s: State): Seq[AttributeKey[_]] =
 	{
 		val extracted = Project.extract(s)
 		import extracted._
 		val index = structure.index
-		val pairs = index.keyIndex.keys(Some(currentRef)).toSeq map index.keyMap sortBy(_.label) flatMap taskStrings
-		aligned("  ", "   ", pairs) mkString("\n", "\n", "")
+		index.keyIndex.keys(Some(currentRef)).toSeq map index.keyMap sortBy(_.label)
 	}
+	def tasksHelp(s: State): String =	
+		aligned("  ", "   ", taskDetail(s)) mkString("\n", "\n", "")
+
 	def taskStrings(key: AttributeKey[_]): Option[(String, String)]  =  key.description map { d => (key.label, d) }
 	def aligned(pre: String, sep: String, in: Seq[(String, String)]): Seq[String] =
 	{
@@ -217,18 +254,18 @@ object BuiltinCommands
 		val line = reader.readLine(prompt)
 		line match {
 			case Some(line) =>
-				if(!line.trim.isEmpty) CommandSupport.globalLogging(s).backed.out.println(Output.DefaultTail + line)
-				s.copy(onFailure = Some(Shell), remainingCommands = line +: Shell +: s.remainingCommands)
+				val newState = s.copy(onFailure = Some(Shell), remainingCommands = line +: Shell +: s.remainingCommands)
+				if(line.trim.isEmpty) newState else newState.clearGlobalLog
 			case None => s
 		}
 	}
-	
+
 	def multiParser(s: State): Parser[Seq[String]] =
-		( token(';' ~> OptSpace) flatMap { _ => matched(s.combinedParser | token(charClass(_ != ';').+, hide= const(true))) <~ token(OptSpace) } ).+
+		( token(';' ~> OptSpace) flatMap { _ => matched(s.combinedParser | token(charClass(_ != ';').+, hide= const(true))) <~ token(OptSpace) } map (_.trim) ).+
 	def multiApplied(s: State) = 
 		Command.applyEffect( multiParser(s) )( _ ::: s )
 
-	def multi = Command.custom(multiApplied, Help(MultiBrief, (Set(Multi), MultiDetailed)) :: Nil )
+	def multi = Command.custom(multiApplied, Help(Multi, MultiBrief, MultiDetailed) )
 	
 	lazy val otherCommandParser = (s: State) => token(OptSpace ~> matched(s.combinedParser) )
 
@@ -353,11 +390,12 @@ object BuiltinCommands
 	def lastGrep = Command(LastGrepCommand, lastGrepBrief, lastGrepDetailed)(lastGrepParser) {
 		case (s, (pattern,Some(sk))) =>
 			val (str, ref, display) = extractLast(s)
-			Output.lastGrep(sk, str, pattern)(display)
-			s
+			Output.lastGrep(sk, str, str.streams(s), pattern, printLast(s))(display)
+			keepLastLog(s)
 		case (s, (pattern, None)) =>
-			Output.lastGrep(CommandSupport.globalLogging(s).backing, pattern)
-			s
+			for(logFile <- lastLogFile(s)) yield
+				Output.lastGrep(logFile, pattern, printLast(s))
+			keepLastLog(s)
 	}
 	def extractLast(s: State) = {
 		val ext = Project.extract(s)
@@ -370,12 +408,33 @@ object BuiltinCommands
 	def last = Command(LastCommand, lastBrief, lastDetailed)(optSpacedKeyParser) {
 		case (s,Some(sk)) =>
 			val (str, ref, display) = extractLast(s)
-			Output.last(sk, str)(display)
-			s
+			Output.last(sk, str, str.streams(s), printLast(s))(display)
+			keepLastLog(s)
 		case (s, None) =>
-			Output.last( CommandSupport.globalLogging(s).backing )
-			s
+			for(logFile <- lastLogFile(s)) yield
+				Output.last( logFile, printLast(s) )
+			keepLastLog(s)
 	}
+
+	/** Determines the log file that last* commands should operate on.  See also isLastOnly. */
+	def lastLogFile(s: State) =
+	{
+		val backing = CommandSupport.globalLogging(s).backing
+		if(isLastOnly(s)) backing.last else Some(backing.file)
+	}
+
+	/** If false, shift the current log file to be the log file that 'last' will operate on.
+	* If true, keep the previous log file as the one 'last' operates on because there is nothing useful in the current one.*/
+	def keepLastLog(s: State): State = if(isLastOnly(s)) s.keepLastLog else s
+
+	/** The last* commands need to determine whether to read from the current log file or the previous log file
+	* and whether to keep the previous log file or not.  This is selected based on whether the previous command
+	* was 'shell', which meant that the user directly entered the 'last' command.  If it wasn't directly entered,
+	* the last* commands operate on any output since the last 'shell' command and do shift the log file.
+	* Otherwise, the output since the previous 'shell' command is used and the log file is not shifted.*/
+	def isLastOnly(s: State): Boolean = s.history.previous.forall(_ == Shell)
+		
+	def printLast(s: State): Seq[String] => Unit = _ foreach println
 
 	def autoImports(extracted: Extracted): EvalImports  =  new EvalImports(imports(extracted), "<auto-imports>")
 	def imports(extracted: Extracted): Seq[(String,Int)] =
@@ -391,7 +450,13 @@ object BuiltinCommands
 		for(id <- build.defined.keys.toSeq.sorted) log.info("\t" + prefix(id) + id)
 	}
 
-	def act = Command.custom(Act.actParser)
+	def act = Command.customHelp(Act.actParser, actHelp)
+	def actHelp = (s: State) => CommandSupport.showHelp ++ keysHelp(s)
+	def keysHelp(s: State): Help =
+		if(Project.isProjectLoaded(s))
+			Help.detailOnly(taskDetail(s))
+		else
+			Help.empty
 
 	def projects = Command.command(ProjectsCommand, projectsBrief, projectsDetailed ) { s =>
 		val extracted = Project extract s
@@ -410,7 +475,7 @@ object BuiltinCommands
 
 	def project = Command.make(ProjectCommand, projectBrief, projectDetailed)(ProjectNavigation.command)
 
-	def exit = Command.command(TerminateAction, Help(exitBrief) :: Nil ) ( doExit )
+	def exit = Command.command(TerminateAction, exitBrief, exitBrief ) ( doExit )
 
 	def doExit(s: State): State  =  s.runExitHooks().exit(true)
 
@@ -421,7 +486,7 @@ object BuiltinCommands
 		def matches(s: String) = !result.isEmpty && (s startsWith result)
 		
 		if(result.isEmpty || matches("retry"))
-			LoadProject :: s
+			LoadProject :: s.clearGlobalLog
 		else if(matches(Quit))
 			s.exit(ok = false)
 		else if(matches("ignore"))

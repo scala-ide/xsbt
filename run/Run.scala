@@ -17,12 +17,20 @@ class ForkRun(config: ForkScalaRun) extends ScalaRun
 {
 	def run(mainClass: String, classpath: Seq[File], options: Seq[String], log: Logger): Option[String] =
 	{
+		log.info("Running " + mainClass + " " + options.mkString(" "))
+
 		val scalaOptions = classpathOption(classpath) ::: mainClass :: options.toList
 		val strategy = config.outputStrategy getOrElse LoggedOutput(log)
-		val exitCode =  Fork.scala(config.javaHome, config.runJVMOptions, config.scalaJars, scalaOptions, config.workingDirectory, strategy)
+		val process =  Fork.scala.fork(config.javaHome, config.runJVMOptions, config.scalaJars, scalaOptions, config.workingDirectory, config.connectInput, strategy)
+		def cancel() = {
+			log.warn("Run canceled.")
+			process.destroy()
+			1
+		}
+		val exitCode = try process.exitValue() catch { case e: InterruptedException => cancel() }
 		processExitCode(exitCode, "runner")
 	}
-	private def classpathOption(classpath: Seq[File]) = "-cp" :: Path.makeString(classpath) :: Nil
+	private def classpathOption(classpath: Seq[File]) = "-classpath" :: Path.makeString(classpath) :: Nil
 	private def processExitCode(exitCode: Int, label: String) =
 	{
 		if(exitCode == 0)

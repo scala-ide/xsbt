@@ -53,7 +53,6 @@ object Load
 	}
 	def injectGlobal(state: State): Seq[Project.Setting[_]] =
 		(appConfiguration in GlobalScope :== state.configuration) +:
-		(globalLogging in GlobalScope := CommandSupport.globalLogging(state)) +: 
 		EvaluateTask.injectSettings
 	def defaultWithGlobal(state: State, base: File, rawConfig: LoadBuildConfiguration, globalBase: File, log: Logger): LoadBuildConfiguration =
 	{
@@ -227,9 +226,9 @@ object Load
 
 	def load(file: File, s: State, config: LoadBuildConfiguration): PartBuild =
 	{
-		val fail = (uri: URI) => error("Invalid build URI: " + uri)
+		val fail = (uri: URI) => error("Invalid build URI (no handler available): " + uri)
 		val resolver = (info: BuildLoader.ResolveInfo) => RetrieveUnit(info.staging, info.uri)
-		val build = (info: BuildLoader.BuildInfo) => Some((base: File) => loadUnit(info.uri, base, info.state, info.config))
+		val build = (info: BuildLoader.BuildInfo) => Some(() => loadUnit(info.uri, info.base, info.state, info.config))
 		val components = BuildLoader.components(resolver, build, full = BuildLoader.componentLoader)
 		val builtinLoader = BuildLoader(components, fail, s, config)
 		load(file, builtinLoader)
@@ -238,9 +237,10 @@ object Load
 	def loadURI(uri: URI, loaders: BuildLoader): PartBuild =
 	{
 		IO.assertAbsolute(uri)
-		val (referenced, map) = loadAll(uri :: Nil, Map.empty, loaders, Map.empty)
+		val (referenced, map, newLoaders) = loadAll(uri :: Nil, Map.empty, loaders, Map.empty)
 		checkAll(referenced, map)
-		new PartBuild(uri, map)
+		val build = new PartBuild(uri, map)
+		newLoaders transformAll build
 	}
 	def addResolvers(unit: BuildUnit, isRoot: Boolean, loaders: BuildLoader): BuildLoader =
 		unit.definitions.builds.flatMap(_.buildLoaders) match
@@ -273,7 +273,7 @@ object Load
 		Project.transform(resolve, unit.definitions.builds.flatMap(_.settings))
 	}
 
-	@tailrec def loadAll(bases: List[URI], references: Map[URI, List[ProjectReference]], loaders: BuildLoader, builds: Map[URI, PartBuildUnit]): (Map[URI, List[ProjectReference]], Map[URI, PartBuildUnit]) =
+	@tailrec def loadAll(bases: List[URI], references: Map[URI, List[ProjectReference]], loaders: BuildLoader, builds: Map[URI, PartBuildUnit]): (Map[URI, List[ProjectReference]], Map[URI, PartBuildUnit], BuildLoader) =
 		bases match
 		{
 			case b :: bs =>
@@ -286,7 +286,7 @@ object Load
 					val newLoader = addResolvers(loadedBuild.unit, builds.isEmpty, loaders)
 					loadAll(refs.flatMap(Reference.uri) reverse_::: bs, references.updated(b, refs), newLoader, builds.updated(b, loadedBuild))
 				}
-			case Nil => (references, builds)
+			case Nil => (references, builds, loaders)
 		}
 	def checkProjectBase(buildBase: File, projectBase: File)
 	{
@@ -388,6 +388,8 @@ object Load
 	}
 	def loadUnitOld(defDir: File, pluginDir: File, s: State, config: LoadBuildConfiguration): (LoadedPlugins, LoadedDefinitions) =
 	{
+		config.log.warn("Using project/plugins/ is deprecated for plugin configuration (" + pluginDir + ").\n" +
+			"Put .sbt plugin definitions directly in project/,\n  .scala plugin definitions in project/project/,\n  and remove the project/plugins/ directory.")
 		val plugs = plugins(pluginDir, s, config)
 		val defs = definitionSources(defDir)
 		val target = buildOutputDirectory(defDir, config.compilers)
@@ -575,7 +577,7 @@ object Load
 
 	def referenced[PR <: ProjectReference](definitions: Seq[ProjectDefinition[PR]]): Seq[PR] = definitions flatMap { _.referenced }
 	
-	final class BuildStructure(val units: Map[URI, LoadedBuildUnit], val root: URI, val settings: Seq[Setting[_]], val data: Settings[Scope], val index: StructureIndex, val streams: Streams, val delegates: Scope => Seq[Scope], val scopeLocal: ScopeLocal)
+	final class BuildStructure(val units: Map[URI, LoadedBuildUnit], val root: URI, val settings: Seq[Setting[_]], val data: Settings[Scope], val index: StructureIndex, val streams: State => Streams, val delegates: Scope => Seq[Scope], val scopeLocal: ScopeLocal)
 	{
 		val rootProject: URI => String = Load getRootProject units
 		def allProjects: Seq[ResolvedProject] = units.values.flatMap(_.defined.values).toSeq

@@ -5,40 +5,39 @@
 // based on Ivy's PomModuleDescriptorWriter, which is Apache Licensed, Version 2.0
 // http://www.apache.org/licenses/LICENSE-2.0
 
-package sbt;
+package sbt
 
-import java.io.{BufferedWriter, File, OutputStreamWriter, FileOutputStream}
-import scala.xml.{Node => XNode, NodeSeq, PrettyPrinter, XML}
+import java.io.File
+// Node needs to be renamed to XNode because the task subproject contains a Node type that will shadow
+// scala.xml.Node when generating aggregated API documentation
+import scala.xml.{Node => XNode, NodeSeq, PrettyPrinter}
 import Configurations.Optional
 
 import org.apache.ivy.{core, plugins, Ivy}
 import core.settings.IvySettings
-import core.module.{descriptor, id}
+import core.module.descriptor
 import descriptor.{DependencyDescriptor, License, ModuleDescriptor, ExcludeRule}
-import id.ModuleRevisionId
 import plugins.resolver.{ChainResolver, DependencyResolver, IBiblioResolver}
 
 class MakePom(val log: Logger)
 {
-	def encoding = "UTF-8"
+	@deprecated("Use `write(Ivy, ModuleDescriptor, ModuleInfo, Option[Iterable[Configuration]], Set[String], NodeSeq, XNode => XNode, MavenRepository => Boolean, Boolean, File)` instead", "0.11.2")
 	def write(ivy: Ivy, module: ModuleDescriptor, moduleInfo: ModuleInfo, configurations: Option[Iterable[Configuration]], extra: NodeSeq, process: XNode => XNode, filterRepositories: MavenRepository => Boolean, allRepositories: Boolean, output: File): Unit =
-		write(process(toPom(ivy, module, moduleInfo, configurations, extra, filterRepositories, allRepositories)), output)
+		write(ivy, module, moduleInfo: ModuleInfo, configurations: Option[Iterable[Configuration]], Set(Artifact.DefaultType), extra, process, filterRepositories, allRepositories, output)
+	def write(ivy: Ivy, module: ModuleDescriptor, moduleInfo: ModuleInfo, configurations: Option[Iterable[Configuration]], includeTypes: Set[String], extra: NodeSeq, process: XNode => XNode, filterRepositories: MavenRepository => Boolean, allRepositories: Boolean, output: File): Unit =
+		write(process(toPom(ivy, module, moduleInfo, configurations, includeTypes, extra, filterRepositories, allRepositories)), output)
 	// use \n as newline because toString uses PrettyPrinter, which hard codes line endings to be \n
 	def write(node: XNode, output: File): Unit = write(toString(node), output, "\n")
 	def write(xmlString: String, output: File, newline: String)
 	{
-		output.getParentFile.mkdirs()
-		val out = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(output), encoding))
-		try
-		{
-			out.write("<?xml version='1.0' encoding='" + encoding + "'?>" + newline)
-			out.write(xmlString)
-		}
-		finally { out.close() }
+		IO.write(output, "<?xml version='1.0' encoding='" + IO.utf8.name + "'?>" + newline + xmlString)
 	}
 
 	def toString(node: XNode): String = new PrettyPrinter(1000, 4).format(node)
+	@deprecated("Use `toPom(Ivy, ModuleDescriptor, ModuleInfo, Option[Iterable[Configuration]], Set[String], NodeSeq, MavenRepository => Boolean, Boolean)` instead", "0.11.2")
 	def toPom(ivy: Ivy, module: ModuleDescriptor, moduleInfo: ModuleInfo, configurations: Option[Iterable[Configuration]], extra: NodeSeq, filterRepositories: MavenRepository => Boolean, allRepositories: Boolean): XNode =
+		toPom(ivy, module, moduleInfo, configurations, Set(Artifact.DefaultType), extra, filterRepositories, allRepositories)
+	def toPom(ivy: Ivy, module: ModuleDescriptor, moduleInfo: ModuleInfo, configurations: Option[Iterable[Configuration]], includeTypes: Set[String], extra: NodeSeq, filterRepositories: MavenRepository => Boolean, allRepositories: Boolean): XNode =
 		(<project xmlns="http://maven.apache.org/POM/4.0.0"  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 			<modelVersion>4.0.0</modelVersion>
 			{ makeModuleID(module) }
@@ -49,7 +48,7 @@ class MakePom(val log: Logger)
 			{
 				val deps = depsInConfs(module, configurations)
 				makeProperties(module, deps) ++
-				makeDependencies(deps)
+				makeDependencies(deps, includeTypes)
 			}
 			{ makeRepositories(ivy.getSettings, allRepositories, filterRepositories) }
 		</project>)
@@ -57,7 +56,7 @@ class MakePom(val log: Logger)
 	def makeModuleID(module: ModuleDescriptor): NodeSeq =
 	{
 		val mrid = moduleDescriptor(module)
-		val a: NodeSeq = 
+		val a: NodeSeq =
 			(<groupId>{ mrid.getOrganisation }</groupId>
 			<artifactId>{ mrid.getName }</artifactId>
 			<packaging>{ packaging(module) }</packaging>)
@@ -69,12 +68,19 @@ class MakePom(val log: Logger)
 		a ++ b
 	}
 
-	def makeStartYear(moduleInfo: ModuleInfo): NodeSeq = moduleInfo.startYear map { y => <inceptionYear>{y}</inceptionYear> } getOrElse NodeSeq.Empty
+	def makeStartYear(moduleInfo: ModuleInfo): NodeSeq =
+		moduleInfo.startYear match {
+			case Some(y) => <inceptionYear>{y}</inceptionYear>
+			case _ => NodeSeq.Empty
+		}
 	def makeOrganization(moduleInfo: ModuleInfo): NodeSeq =
 	{
 		<organization>
 			<name>{moduleInfo.organizationName}</name>
-			{ moduleInfo.organizationHomepage map { h => <url>{h}</url> } getOrElse NodeSeq.Empty }
+			{ moduleInfo.organizationHomepage match {
+				case Some(h) => <url>{h}</url>
+				case _ => NodeSeq.Empty
+			}}
 		</organization>
 	}
 	def makeProperties(module: ModuleDescriptor, dependencies: Seq[DependencyDescriptor]): NodeSeq =
@@ -115,41 +121,37 @@ class MakePom(val log: Logger)
 		}
 	val IgnoreTypes: Set[String] = Set(Artifact.SourceType, Artifact.DocType, Artifact.PomType)
 
-	def makeDependencies(dependencies: Seq[DependencyDescriptor]): NodeSeq =
+	def makeDependencies(dependencies: Seq[DependencyDescriptor], includeTypes: Set[String]): NodeSeq =
 		if(dependencies.isEmpty)
 			NodeSeq.Empty
 		else
 			<dependencies>
-				{ dependencies.map(makeDependency) }
+				{ dependencies.map(makeDependency(_, includeTypes)) }
 			</dependencies>
 
-	def makeDependency(dependency: DependencyDescriptor): NodeSeq =
+	def makeDependency(dependency: DependencyDescriptor, includeTypes: Set[String]): NodeSeq =
 	{
 		val mrid = dependency.getDependencyRevisionId
-		val excl = dependency.getExcludeRules(dependency.getModuleConfigurations)
 		<dependency>
 			<groupId>{mrid.getOrganisation}</groupId>
 			<artifactId>{mrid.getName}</artifactId>
 			<version>{mrid.getRevision}</version>
 			{ scopeAndOptional(dependency) }
-			{ classifier(dependency) }
-			{
-				val (warns, excls) = List.separate(excl.map(makeExclusion))
-				if(!warns.isEmpty) log.warn(warns.mkString(IO.Newline))
-				if(excls.isEmpty) NodeSeq.Empty
-				else
-					<exclusions>
-						{ excls }
-					</exclusions>
-			}
+			{ classifier(dependency, includeTypes) }
+			{ exclusions(dependency) }
 		</dependency>
 	}
 
-	def classifier(dependency: DependencyDescriptor): Seq[scala.xml.Node] =
+	def classifier(dependency: DependencyDescriptor, includeTypes: Set[String]): NodeSeq =
 	{
-		for (da <- dependency.getAllDependencyArtifacts;
-				 cl <- Option(da.getExtraAttribute("classifier"))) yield
-					<classifier>{cl}</classifier>
+		val jarDep = dependency.getAllDependencyArtifacts.filter(d => includeTypes(d.getType)).headOption
+		jarDep match {
+			case Some(a) => {
+				val cl = a.getExtraAttribute("classifier")
+				if (cl != null) <classifier>{cl}</classifier> else NodeSeq.Empty
+			}
+			case _ => NodeSeq.Empty
+		}
 	}
 
 	def scopeAndOptional(dependency: DependencyDescriptor): NodeSeq  =
@@ -180,6 +182,14 @@ class MakePom(val log: Logger)
 		(scope, !opt.isEmpty)
 	}
 
+	def exclusions(dependency: DependencyDescriptor): NodeSeq =
+	{
+		val excl = dependency.getExcludeRules(dependency.getModuleConfigurations)
+		val (warns, excls) = List.separate(excl.map(makeExclusion))
+		if(!warns.isEmpty) log.warn(warns.mkString(IO.Newline))
+		if(!excls.isEmpty) <exclusions>{excls}</exclusions>
+		else NodeSeq.Empty
+	}
 	def makeExclusion(exclRule: ExcludeRule): Either[String, NodeSeq] =
 	{
 		val m = exclRule.getId.getModuleId

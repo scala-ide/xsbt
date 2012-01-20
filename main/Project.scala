@@ -76,7 +76,8 @@ final case class Extracted(structure: BuildStructure, session: SessionSettings, 
 	{
 			import EvaluateTask._
 		val rkey = resolve(key.scopedKey)
-		val value: Option[(State, Result[T])] = apply(structure, key.task.scopedKey, state, currentRef)
+		val config = extractedConfig(this, structure)
+		val value: Option[(State, Result[T])] = apply(structure, key.task.scopedKey, state, currentRef, config)
 		val (newS, result) = getOrError(rkey.scope, rkey.key, value)
 		(newS, processResult(result, newS.log))
 	}
@@ -342,7 +343,8 @@ object Project extends Init[Scope] with ProjectExtra
 	def runTask[T](taskKey: ScopedKey[Task[T]], state: State, checkCycles: Boolean = false, maxWorkers: Int = EvaluateTask.SystemProcessors): Option[(State, Result[T])] =
 	{
 		val extracted = Project.extract(state)
-		EvaluateTask(extracted.structure, taskKey, state, extracted.currentRef, checkCycles, maxWorkers)
+		val config = EvaluateConfig(true, checkCycles, maxWorkers)
+		EvaluateTask(extracted.structure, taskKey, state, extracted.currentRef, config)
 	}
 	// this is here instead of Scoped so that it is considered without need for import (because of Project.Initialize)
 	implicit def richInitializeTask[T](init: Initialize[Task[T]]): Scoped.RichInitializeTask[T] = new Scoped.RichInitializeTask(init)
@@ -382,7 +384,7 @@ object SessionVar
 	}
 
 	def persist[T](key: ScopedKey[Task[T]], state: State, value: T)(implicit f: sbinary.Format[T]): Unit =
-		Project.structure(state).streams.use(key)( s =>
+		Project.structure(state).streams(state).use(key)( s =>
 			Operations.write(s.binary(DefaultDataID), value)(f)
 		)
 
@@ -408,7 +410,7 @@ object SessionVar
 	}
 
 	def read[T](key: ScopedKey[Task[T]], state: State)(implicit f: Format[T]): Option[T] =
-		Project.structure(state).streams.use(key) { s =>
+		Project.structure(state).streams(state).use(key) { s =>
 			try { Some(Operations.read(s.readBinary(key, DefaultDataID))) }
 			catch { case e: Exception => None }
 		}
