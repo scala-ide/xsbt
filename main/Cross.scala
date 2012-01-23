@@ -34,7 +34,7 @@ object Cross
 	}
 	def crossExclude(s: Setting[_]): Boolean =
 		s.key match {
-			case ScopedKey( Scope(_, Global, Global, _), scalaHome.key | scalaVersion.key) => true
+			case ScopedKey( Scope(_, Global, Global, _), init) if init == scalaHome.key || init == scalaVersion.key => true
 			case _ => false
 		}
 
