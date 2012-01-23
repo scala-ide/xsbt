@@ -147,7 +147,7 @@ object EvaluateTask
 		case i => i
 	}
 	def convertCyclic(c: AnyCyclic): String =
-		(c.caller, c.target) match {
+		(c.caller: Task[_], c.target: Task[_]) match {
 			case (caller: Task[_], target: Task[_]) =>
 				c.toString + (if(caller eq target) "(task: " + name(caller) + ")" else "(caller: " + name(caller) + ", target: " + name(target) + ")" )
 			case _ => c.toString
