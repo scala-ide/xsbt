@@ -15,7 +15,7 @@ object Sbt extends Build
 	override lazy val settings = super.settings ++ buildSettings ++ Status.settings
 	def buildSettings = Seq(
 		organization := "org.scala-tools.sbt",
-		version := "0.11.4",
+		version := "0.11.2-scalaide-01",
 		publishArtifact in packageDoc := false,
 		scalaVersion := scalaVersionGlobal,
 		origScalaVersion := scalaVersionGlobal,
@@ -26,7 +26,7 @@ object Sbt extends Build
 		javacOptions in Compile ++= Seq("-target", "6", "-source", "6"))
 
   def localPublishSettings = Seq(
-    otherResolvers += Resolver.file("some-id", file("/tmp/sbt/publish")),
+    otherResolvers += Resolver.file("some-id",  new File(Path.userHome.absolutePath+"/.m2/repository")),
     publishLocalConfiguration <<= (packagedArtifacts, deliverLocal, ivyLoggingLevel) map { 
       (arts, _, level) => sbt.Classpaths.publishConfig(arts, None, Seq(), resolverName = "some-id", logging = level ) 
     }
