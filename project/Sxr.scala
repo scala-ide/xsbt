@@ -10,7 +10,7 @@ object Sxr
 
 	lazy val settings: Seq[Setting[_]] = inTask(sxr)(inSxrSettings) ++ baseSettings
 	
-	val sxrScalaVersion = Map("2.9.1" -> "2.9.0")
+	val sxrScalaVersion = Map("2.9.1" -> "2.9.1")
 
 	def baseSettings = Seq(
 	  libraryDependencies <<= (scalaVersion, libraryDependencies) {(sv, deps) =>
