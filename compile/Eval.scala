@@ -21,7 +21,7 @@ final class EvalException(msg: String) extends RuntimeException(msg)
 // not thread safe, since it reuses a Global instance
 final class Eval(optionsNoncp: Seq[String], classpath: Seq[File], mkReporter: Settings => Reporter, backing: Option[File])
 {
-	def this(mkReporter: Settings => Reporter, backing: Option[File]) = this(Nil, IO.classLocationFile[ScalaObject] :: Nil, mkReporter, backing)
+	def this(mkReporter: Settings => Reporter, backing: Option[File]) = this(Nil, IO.classLocationFile[scala.Byte] :: Nil, mkReporter, backing)
 	def this() = this(s => new ConsoleReporter(s), None)
 
 	backing.foreach(IO.createDirectory)
@@ -124,7 +124,7 @@ final class Eval(optionsNoncp: Seq[String], classpath: Seq[File], mkReporter: Se
 	  }
 
 		def method = DefDef(NoMods, newTermName(WrapValName), Nil, Nil, tpt, tree)
-		def moduleBody = Template(List(gen.scalaScalaObjectConstr), emptyValDef, List(emptyInit, method))
+		def moduleBody = Template(List(gen.scalaAnyRefConstr), emptyValDef, List(emptyInit, method))
 		def moduleDef = ModuleDef(NoMods, newTermName(objectName), moduleBody)
 		parser.makePackaging(0, emptyPkg, (imports :+ moduleDef).toList)
 	}
