@@ -15,7 +15,7 @@ object Sbt extends Build
 	override lazy val settings = super.settings ++ buildSettings ++ Status.settings
 	def buildSettings = Seq(
 		organization := "org.scala-tools.sbt",
-		version := "0.11.2-scalaide-02",
+		version := "0.11.2-scalaide-03",
 		publishArtifact in packageDoc := false,
 		scalaVersion := scalaVersionGlobal,
 		origScalaVersion := scalaVersionGlobal,
@@ -34,6 +34,7 @@ object Sbt extends Build
       
   lazy val origScalaVersion = SettingKey[String]("orig-scala-version")
   private val scalaVersionGlobal = "2.10.0-SNAPSHOT"
+  // private val scalaVersionGlobal = "2.9.1"
 
 	lazy val myProvided = config("provided") intransitive;
 	override def projects = super.projects.map(p => p.copy(configurations = (p.configurations.filter(_ != Provided)) :+ myProvided) settings(localPublishSettings: _*))
