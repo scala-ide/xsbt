@@ -95,7 +95,7 @@ trait TaskExtra
 		def tasks: Seq[Task[S]] = fork(idFun)
 	}
 
-	final implicit def joinAnyTasks(in: Seq[Task[_]]): JoinTask[Any, Seq] = joinTasks[Any](in map (x => x: Task[Any]))
+	//final implicit def joinAnyTasks(in: Seq[Task[_]]): JoinTask[Any, Seq] = joinTasks[Any](in map (x => x: Task[Any]))
 	final implicit def joinTasks[S](in: Seq[Task[S]]): JoinTask[S, Seq] = new JoinTask[S, Seq] {
 		def join: Task[Seq[S]] = new Join(in, (s: Seq[Result[S]]) => Right(TaskExtra.all(s)) )
 		def reduced(f: (S,S) => S): Task[S] = TaskExtra.reduced(in.toIndexedSeq, f)
