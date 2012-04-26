@@ -15,12 +15,14 @@ object Sbt extends Build
 	override lazy val settings = super.settings ++ buildSettings ++ Status.settings
 	def buildSettings = Seq(
 		organization := "org.scala-tools.sbt",
-		version := "0.11.2-scalaide-04",
+		version := "0.11.2-scalaide-05",
 		publishArtifact in packageDoc := false,
 		scalaVersion := scalaVersionGlobal,
 		origScalaVersion := scalaVersionGlobal,
-		resolvers += ScalaToolsSnapshots,
+		//resolvers += ScalaToolsSnapshots,
 		resolvers += "Typesafe IDE repo" at ("http://typesafe.artifactoryonline.com/typesafe/ide-" + Release.cutVersion(scalaVersionGlobal)),
+		resolvers += "Typesafe IDE repo" at ("http://typesafe.artifactoryonline.com/typesafe/ide-" + Release.cutVersion(scalaVersionGlobal)),
+		resolvers += "Sonatype Snapshot repo" at ("https://oss.sonatype.org/content/repositories/snapshots"),
 		publishMavenStyle := true,
 		componentID := None,
 		javacOptions in Compile ++= Seq("-target", "6", "-source", "6"))
