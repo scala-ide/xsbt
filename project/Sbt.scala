@@ -15,12 +15,11 @@ object Sbt extends Build
 	override lazy val settings = super.settings ++ buildSettings ++ Status.settings
 	def buildSettings = Seq(
 		organization := "org.scala-tools.sbt",
-		version := "0.11.2-scalaide-05",
+		version := "0.11.2-scalaide-06",
 		publishArtifact in packageDoc := false,
 		scalaVersion := scalaVersionGlobal,
 		origScalaVersion := scalaVersionGlobal,
 		//resolvers += ScalaToolsSnapshots,
-		resolvers += "Typesafe IDE repo" at ("http://typesafe.artifactoryonline.com/typesafe/ide-" + Release.cutVersion(scalaVersionGlobal)),
 		resolvers += "Typesafe IDE repo" at ("http://typesafe.artifactoryonline.com/typesafe/ide-" + Release.cutVersion(scalaVersionGlobal)),
 		resolvers += "Sonatype Snapshot repo" at ("https://oss.sonatype.org/content/repositories/snapshots"),
 		publishMavenStyle := true,
@@ -35,7 +34,7 @@ object Sbt extends Build
     )
       
   lazy val origScalaVersion = SettingKey[String]("orig-scala-version")
-  private val scalaVersionGlobal = "2.10.0-SNAPSHOT"
+  private val scalaVersionGlobal = (new sys.SystemProperties).getOrElse("scala.version", "2.10.0-SNAPSHOT")
   // private val scalaVersionGlobal = "2.9.1"
 
 	lazy val myProvided = config("provided") intransitive;
@@ -103,6 +102,7 @@ object Sbt extends Build
 		//   Includes API and Analyzer phases that extract source API and relationships.
 	lazy val compileInterfaceSub = baseProject(compilePath / "interface", "Compiler Interface") dependsOn(interfaceSub, ioSub % "test->test", logSub % "test->test", launchSub % "test->test") settings( compileInterfaceSettings : _*)
 	lazy val precompiled210 = precompiled("2.10.0-SNAPSHOT", scalaVersionGlobal)
+	lazy val precompiled210M3 = precompiled("2.10.0-M3", scalaVersionGlobal)
 	lazy val precompiled291 = precompiled("2.9.1", scalaVersionGlobal)
 	lazy val precompiled29 = precompiled("2.9.0-1", scalaVersionGlobal)
 	lazy val precompiled283 = precompiled("2.8.3-SNAPSHOT", scalaVersionGlobal)
@@ -134,7 +134,7 @@ object Sbt extends Build
 		//  technically, we need a dependency on all of mainSub's dependencies, but we don't do that since this is strictly an integration project
 		//  with the sole purpose of providing certain identifiers without qualification (with a package object)
 
-	lazy val sbtSub = baseProject(sbtPath, "Simple Build Tool") dependsOn(mainSub, compileInterfaceSub, precompiled210, precompiled291, precompiled29, precompiled282, precompiled28, scriptedSbtSub % "test->test") settings(sbtSettings : _*)
+	lazy val sbtSub = baseProject(sbtPath, "Simple Build Tool") dependsOn(mainSub, compileInterfaceSub, precompiled210, precompiled210M3, precompiled291, precompiled29, precompiled282, precompiled28, scriptedSbtSub % "test->test") settings(sbtSettings : _*)
 
 		/* Nested subproject paths */
 	def sbtPath = file("sbt")
