@@ -15,7 +15,7 @@ object Sbt extends Build
 	override lazy val settings = super.settings ++ buildSettings ++ Status.settings
 	def buildSettings = Seq(
 		organization := "org.scala-tools.sbt",
-		version := "0.11.2-scalaide-06",
+		version := "0.11.2-scalaide-07",
 		publishArtifact in packageDoc := false,
 		scalaVersion := scalaVersionGlobal,
 		origScalaVersion := scalaVersionGlobal,
@@ -105,9 +105,9 @@ object Sbt extends Build
 	lazy val precompiled210M3 = precompiled("2.10.0-M3", scalaVersionGlobal)
 	lazy val precompiled291 = precompiled("2.9.1", scalaVersionGlobal)
 	lazy val precompiled29 = precompiled("2.9.0-1", scalaVersionGlobal)
-	lazy val precompiled283 = precompiled("2.8.3-SNAPSHOT", scalaVersionGlobal)
-	lazy val precompiled282 = precompiled("2.8.2", scalaVersionGlobal)
-	lazy val precompiled28 = precompiled("2.8.1", scalaVersionGlobal)
+	// lazy val precompiled283 = precompiled("2.8.3-SNAPSHOT", scalaVersionGlobal)
+	// lazy val precompiled282 = precompiled("2.8.2", scalaVersionGlobal)
+	// lazy val precompiled28 = precompiled("2.8.1", scalaVersionGlobal)
 
 		// Implements the core functionality of detecting and propagating changes incrementally.
 		//   Defines the data structures for representing file fingerprints and relationships and the overall source analysis
@@ -134,7 +134,7 @@ object Sbt extends Build
 		//  technically, we need a dependency on all of mainSub's dependencies, but we don't do that since this is strictly an integration project
 		//  with the sole purpose of providing certain identifiers without qualification (with a package object)
 
-	lazy val sbtSub = baseProject(sbtPath, "Simple Build Tool") dependsOn(mainSub, compileInterfaceSub, precompiled210, precompiled210M3, precompiled291, precompiled29, precompiled282, precompiled28, scriptedSbtSub % "test->test") settings(sbtSettings : _*)
+	lazy val sbtSub = baseProject(sbtPath, "Simple Build Tool") dependsOn(mainSub, compileInterfaceSub, precompiled210, precompiled210M3, precompiled291, precompiled29, scriptedSbtSub % "test->test") settings(sbtSettings : _*)
 
 		/* Nested subproject paths */
 	def sbtPath = file("sbt")
@@ -238,5 +238,5 @@ object Sbt extends Build
 		libraryDependencies <+= scalaVersion( "org.scala-lang" % "scala-compiler" % _ % "test"),
 		unmanagedJars in Test <<= (packageSrc in compileInterfaceSub in Compile).map(x => Seq(x).classpath)
 	)
-	def precompiled(scalav: String, globalScala: String): Project = baseProject(compilePath / "interface", "Precompiled " + globalScala + " " + scalav.replace('.', '_')) dependsOn(interfaceSub) settings(scalaVersion := scalav) settings(precompiledSettings(scalav, Seq(normalizedName <<= (name){ (n) => StringUtilities.normalize(n).replaceAll("""snapshot""", "SNAPSHOT")})) : _*)
+	def precompiled(scalav: String, globalScala: String): Project = baseProject(compilePath / "interface", "Precompiled " + globalScala + " " + scalav.replace('.', '_')) dependsOn(interfaceSub) settings(scalaVersion := scalav) settings(precompiledSettings(scalav, Seq(normalizedName <<= (name){ (n) => StringUtilities.normalize(n).replaceAll("""snapshot""", "SNAPSHOT").replaceAll("""m(\d)""", "M$1")})) : _*)
 }
